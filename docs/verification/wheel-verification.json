@@ -1,0 +1,14 @@
+{
+  "started_at": "2026-09-17T16:19:19.591336+00:00",
+  "wheel": "local_agent_harness-0.1.0-py3-none-any.whl",
+  "wheel_sha256": "dd9bdd2d0aad757d8080d922c49b09081f40b82115c03fff58506dbccf50eb2e",
+  "checks": {
+    "bundled_web_and_skill": true,
+    "isolated_install": true,
+    "installed_supervisor_api_worker": true,
+    "installed_graph_run_completed": true,
+    "installed_stop": true
+  },
+  "passed": true,
+  "completed_at": "2026-09-17T16:19:53.291428+00:00"
+}

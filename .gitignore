@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+node_modules/
+apps/web/dist/
+.harness/
+dist/
+*.egg-info/
+test-results/
+playwright-report/
+
+# Local editor settings, credentials, and Windows caches
+.idea/
+.env
+.env.*
+!.env.example
+!.env.sample
+/%SystemDrive%/
+*.tsbuildinfo

@@ -1,0 +1,67 @@
+{
+  "checked_at": "2026-09-17T14:49:43.375326+00:00",
+  "change": "Official HTTPS model Fake-IP compatibility",
+  "previous_audit": "pre-fake-ip/final-audit.json",
+  "source_changes_since_previous_acceptance": [
+    "harness/policy/engine.py",
+    "tests/test_model_fake_ip.py"
+  ],
+  "targeted_tests": 44,
+  "new_boundary_tests": 23,
+  "failures": 0,
+  "full_suite_repeated": false,
+  "dependency_locks_unchanged": true,
+  "wheel_sha256": "e3b760c66550ef36c6bd918acaf2184ea32b58aad4f37e851c497d24b67a8e2b",
+  "matches_independent_install_test": true,
+  "wheel_code_and_web_match": true,
+  "correctness_checks": {
+    "compile": 0,
+    "lint": 0
+  },
+  "service": {
+    "instance_id": "ab467325-ebf5-46d9-90c8-57b0a1dc4502",
+    "host": "127.0.0.1",
+    "port": 8767,
+    "supervisor_alive": true,
+    "api_alive": true,
+    "worker_alive": true,
+    "status": "ready",
+    "diagnostics": [],
+    "database": {
+      "ok": true,
+      "integrity": [
+        "ok"
+      ],
+      "foreign_keys": [],
+      "schema_version": 1
+    },
+    "worker_state": {
+      "active_run_ids": [],
+      "heartbeat_at": "2026-09-17T14:49:42.717Z",
+      "instance_id": "ab467325-ebf5-46d9-90c8-57b0a1dc4502",
+      "pid": 77816,
+      "status": "ready",
+      "worker_id": "ab467325-ebf5-46d9-90c8-57b0a1dc4502:77816:f518baab-0e28-4227-ac1d-5dc39b750844"
+    },
+    "maintenance": {
+      "enabled": false,
+      "instance_id": "ab467325-ebf5-46d9-90c8-57b0a1dc4502",
+      "status": "running"
+    }
+  },
+  "health": {
+    "status": "ready",
+    "ready": true,
+    "instance_id": "ab467325-ebf5-46d9-90c8-57b0a1dc4502",
+    "api_alive": true,
+    "worker_ready": true,
+    "db_writable": true,
+    "needs_review_count": 0
+  },
+  "live_network_evidence": "fake-ip-live.json",
+  "backup": "fake-ip-backup.json",
+  "backup_note": "Initial destination hit Windows path length limit; completed backup at shorter Paper-backups path before restart. Partial original attempts preserved.",
+  "user_credentials_used": false,
+  "clash_configuration_modified": false,
+  "passed": true
+}

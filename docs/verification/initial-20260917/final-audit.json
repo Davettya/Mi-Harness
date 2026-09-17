@@ -1,0 +1,24 @@
+{
+  "checked_at": "2026-09-17T13:05:17.450156+00:00",
+  "source_changes_since_tests_started": [],
+  "dependency_lock_changes": [],
+  "wheel_sha256": "32ef20875a13f895307421a7eaba54c88d23cd1793330b586073e22b8fa6d90e",
+  "matches_independent_install_test": true,
+  "wheel_code_and_web_mismatches": [],
+  "openapi_matches_generated_schema": true,
+  "openapi_path_count": 40,
+  "missing_local_document_links": [],
+  "pytest": {
+    "tests": "99",
+    "failures": "0",
+    "errors": "0",
+    "skipped": "0"
+  },
+  "verification_steps": {
+    "pytest": 0,
+    "compile": 0,
+    "lint": 0,
+    "build": 0
+  },
+  "passed": true
+}

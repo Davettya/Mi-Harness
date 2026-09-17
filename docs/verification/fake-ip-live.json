@@ -1,0 +1,12 @@
+{
+  "checked_at": "2026-09-17T14:47:48.204268+00:00",
+  "endpoint": "https://api.deepseek.com",
+  "resolved_addresses": [
+    "198.18.0.88"
+  ],
+  "policy_passed": true,
+  "tls_verified": true,
+  "http_status": 401,
+  "user_api_key_used": false,
+  "clash_config_modified": false
+}

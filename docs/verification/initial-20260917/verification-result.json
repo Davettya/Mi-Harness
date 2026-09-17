@@ -1,0 +1,47 @@
+{
+  "started_at": "2026-09-17T12:58:19.621937+00:00",
+  "steps": {
+    "pytest": {
+      "exit_code": 0,
+      "seconds": 189.938,
+      "command": [
+        "-m",
+        "pytest",
+        "-q",
+        "--disable-warnings",
+        "--junitxml=docs/verification/latest-pytest.xml"
+      ]
+    },
+    "compile": {
+      "exit_code": 0,
+      "seconds": 0.156,
+      "command": [
+        "-m",
+        "compileall",
+        "-q",
+        "harness"
+      ]
+    },
+    "lint": {
+      "exit_code": 0,
+      "seconds": 0.265,
+      "command": [
+        "-m",
+        "ruff",
+        "check",
+        "harness",
+        "--select",
+        "E9,F821,F822,F823,F811"
+      ]
+    },
+    "build": {
+      "exit_code": 0,
+      "seconds": 16.14,
+      "command": [
+        "-m",
+        "build"
+      ]
+    }
+  },
+  "completed_at": "2026-09-17T13:01:46.164151+00:00"
+}

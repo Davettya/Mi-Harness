@@ -1,0 +1,9 @@
+{
+  "verified_at": "2026-09-17T17:13:38.459183+00:00",
+  "frontend_tests": 27,
+  "markdown_tests": 5,
+  "production_build": true,
+  "wheel_web_matches_dist": true,
+  "wheel_sha256": "f283a29d5251d0d3aa3b04795ddcc52aa3739910e379102e0498125184e447a4",
+  "scope": "Markdown assistant messages and streaming; backend unchanged"
+}

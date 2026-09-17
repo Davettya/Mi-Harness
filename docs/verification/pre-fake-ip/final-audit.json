@@ -1,0 +1,40 @@
+{
+  "checked_at": "2026-09-17T13:56:08.330941+00:00",
+  "source_changes_since_full_suite": [
+    "harness/platform/supervisor.py",
+    "tests/test_platform.py"
+  ],
+  "change_validation": "platform-retest.xml: 10 passed including Windows transient/persistent state read and full backup-restore-restart",
+  "source_manifest": "source-manifest.json",
+  "dependency_lock_changes": [],
+  "wheel_sha256": "9b8b5f04147177e5ffcafd47b2b7d927bb991e1687e6e54c3105eb5766c1519f",
+  "matches_independent_install_test": true,
+  "wheel_code_and_web_mismatches": [],
+  "openapi_matches_generated_schema": true,
+  "openapi_path_count": 44,
+  "missing_local_document_links": [],
+  "pytest_batches": {
+    "full": {
+      "tests": 110,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0
+    },
+    "platform_retest": {
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "combined_unique_cases": 111,
+  "combined_unresolved_failures": 0,
+  "single_full_suite_all_passed": false,
+  "correctness_checks": {
+    "compile": 0,
+    "lint": 0
+  },
+  "live_service_restarted": true,
+  "passed": true,
+  "acceptance_scope": "Local deterministic/controlled-provider acceptance with focused regression after the recorded full-suite failure; no real provider credentials"
+}

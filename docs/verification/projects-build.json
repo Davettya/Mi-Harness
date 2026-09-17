@@ -1,0 +1,21 @@
+{
+  "verified_at": "2026-09-17T16:20:34.406655+00:00",
+  "backend_tests": 138,
+  "project_focused_tests": 4,
+  "frontend_tests": 22,
+  "wheel_matches_current_python_and_web": true,
+  "isolated_wheel_smoke_passed": true,
+  "existing_project_session_ids_and_runtime_config_preserved": true,
+  "artifacts": [
+    {
+      "path": "dist\\local_agent_harness-0.1.0-py3-none-any.whl",
+      "bytes": 544139,
+      "sha256": "dd9bdd2d0aad757d8080d922c49b09081f40b82115c03fff58506dbccf50eb2e"
+    },
+    {
+      "path": "dist\\local_agent_harness-0.1.0.tar.gz",
+      "bytes": 1129398,
+      "sha256": "ca0957e944f7214adedfe7afdac1010c47c3b433f532df27400b9facdb34c566"
+    }
+  ]
+}
