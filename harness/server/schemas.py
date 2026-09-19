@@ -1,11 +1,12 @@
 """Transport schemas owned by implementation/10; domain records retain their owners."""
+
 from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
-from harness.core import ApprovalBinding, ArtifactRef, CheckpointRef, DTO, RunStatus
+from harness.core import DTO, ApprovalBinding, ArtifactRef, CheckpointRef, RunStatus
 from harness.plugins.manifest import PluginManifest
 
 
@@ -35,6 +36,10 @@ class ProjectInput(DTO):
 
 
 class ProjectPatch(ProjectInput):
+    expected_revision: int = Field(ge=1)
+
+
+class ProjectRemoveInput(DTO):
     expected_revision: int = Field(ge=1)
 
 
@@ -76,6 +81,9 @@ class MessageView(DTO):
     content_parts: list[ContentPart]
     model_attempt_id: str | None = None
     usage_ref: str | None = None
+    profile_ref: str | None = None
+    logical_call_id: str | None = None
+    control_revision: int | None = None
 
 
 class SelectedSkillRef(DTO):
@@ -86,7 +94,10 @@ class SelectedSkillRef(DTO):
 class SubmitRunInput(DTO):
     branch_id: str
     expected_branch_revision: int = Field(ge=1)
-    agent_spec_revision: int = Field(ge=1)
+    agent_spec_revision: int | None = Field(default=None, ge=1)
+    mode: Literal["react", "plan"] | None = None
+    model_profile_ref: str | None = None
+    plan_confirmation: dict[str, Any] | None = None
     content_parts: list[ContentPart] = Field(default_factory=list, max_length=100)
     attachment_refs: list[ArtifactRef] = Field(default_factory=list, max_length=100)
     selected_skill_refs: list[SelectedSkillRef] = Field(default_factory=list, max_length=100)
@@ -137,7 +148,9 @@ class ConfigInput(BaseModel):
 
 
 class ModelTestInput(DTO):
-    tests: list[Literal["transport", "messages", "capabilities", "tool_calling", "streaming", "usage"]] = Field(default_factory=lambda: ["transport", "messages", "capabilities"], min_length=1, max_length=6)
+    tests: list[Literal["transport", "messages", "capabilities", "tool_calling", "streaming", "usage"]] = (
+        Field(default_factory=lambda: ["transport", "messages", "capabilities"], min_length=1, max_length=6)
+    )
 
 
 class ModelDiscoveryInput(DTO):
@@ -148,10 +161,20 @@ class ModelDiscoveryInput(DTO):
 
 
 class ModelSetupInput(ModelDiscoveryInput):
+    probe_mode: Literal["agent", "connectivity"] = "agent"
+    # Retained for older clients; agent-mode setup always runs the full server-owned suite.
+    optional_checks: list[Literal["vision", "streaming"]] = Field(default_factory=list, max_length=2)
+    refresh_verification: bool = False
     model_id: str = Field(min_length=1, max_length=512)
+    context_window: Literal[300_000, 1_000_000] = 300_000
 
 
 class ModelSetupSaveInput(ModelSetupInput):
+    accept_unverified_capabilities: list[Literal["vision", "streaming"]] = Field(
+        default_factory=list, max_length=2
+    )
+    activate: bool = True
+    verification_token: str | None = Field(default=None, max_length=200)
     expected_revision: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
@@ -171,7 +194,9 @@ class SkillPatch(DTO):
 
 
 class McpDiagnoseInput(DTO):
-    levels: list[Literal["transport", "protocol", "catalog", "authentication"]] = Field(default_factory=lambda: ["transport", "protocol", "catalog"], min_length=1, max_length=4)
+    levels: list[Literal["transport", "protocol", "catalog", "authentication"]] = Field(
+        default_factory=lambda: ["transport", "protocol", "catalog"], min_length=1, max_length=4
+    )
 
 
 class BranchInput(DTO):
@@ -207,3 +232,24 @@ class PluginLoadInput(DTO):
 
 
 ConfigKind = Literal["models", "agents", "mcp", "skill_sources", "policies"]
+
+
+class PreferencesInput(DTO):
+    expected_revision: int = Field(ge=1)
+    mode: Literal["react", "plan"] | None = None
+    model_profile_ref: str | None = None
+
+
+class ModelSelectionInput(DTO):
+    model_profile_ref: str = Field(min_length=1, max_length=240)
+    expected_control_revision: int = Field(ge=0)
+    persist_for_session: bool = False
+    expected_preferences_revision: int | None = Field(default=None, ge=1)
+
+
+class McpFileInput(DTO):
+    text: str = Field(max_length=1048576)
+
+
+class McpFileSaveInput(McpFileInput):
+    expected_hash: str | None

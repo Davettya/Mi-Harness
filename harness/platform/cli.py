@@ -65,7 +65,7 @@ def coordinated_backup(data_dir: Path, destination: Path, *, timeout=30):
 
 
 def parser():
-    command = argparse.ArgumentParser(prog="harness", description="Local Agent Harness 本地服务管理")
+    command = argparse.ArgumentParser(prog="mi-harness", description="Mi Harness 本地服务管理")
     command.add_argument("--data-dir", type=Path)
     command.add_argument("--config", type=Path)
     sub = command.add_subparsers(dest="command", required=True)
@@ -112,7 +112,7 @@ def main(argv=None):
                 opened = webbrowser.open(f"http://{authority}:{port}/#launch={ticket}")
                 result = {**result, "browser_opened": opened}
                 if not opened:
-                    raise HarnessError("BROWSER_OPEN_FAILED", "浏览器未能自动打开，请重试或使用 harness pair 备用连接", 503)
+                    raise HarnessError("BROWSER_OPEN_FAILED", "浏览器未能自动打开，请重试或使用 mi-harness pair 备用连接", 503)
         elif args.command == "status":
             result = status(data_dir)
         elif args.command == "stop":

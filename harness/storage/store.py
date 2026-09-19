@@ -11,7 +11,9 @@ from typing import Any, Iterator
 
 from harness.core import ExecutionContext, HarnessError, canonical_json, new_id, utc_now
 
-SCHEMA_VERSION = 1
+# Version 2 adds runtime-control semantics in records. Older workers must refuse
+# this database rather than silently ignore Plan and model-call bindings.
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_versions(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
@@ -253,13 +255,21 @@ class Store:
             raise HarnessError("NOT_FOUND", "工作区不存在", 404)
         row["policy"] = json.loads(row["policy"])
         row["roots"] = (self.get("project_roots", row["id"]) or {}).get("roots", [row["root"]])
+        tombstone = self.get("project_tombstones", row["id"])
+        row["removed_at"] = tombstone.get("removed_at") if tombstone else None
+        return row
+
+    def active_workspace(self, workspace_id: str, owner_id: str | None = None) -> dict:
+        row = self.workspace(workspace_id, owner_id)
+        if row["removed_at"]:
+            raise HarnessError("NOT_FOUND", "项目已从 Harness 移除", 404)
         return row
 
     def save_project(self, owner: str, name: str, roots: list[str], policy: dict,
                      identity: str | None = None, expected_revision: int | None = None) -> dict:
         with self.transaction():
             if identity:
-                self.workspace(identity, owner)
+                self.active_workspace(identity, owner)
                 active = self._one(
                     "SELECT id FROM runs WHERE workspace_id=? AND status NOT IN ('completed','failed','cancelled') LIMIT 1",
                     (identity,),
@@ -288,8 +298,39 @@ class Store:
     def workspaces(self, owner: str) -> list[dict]:
         return [
             self.workspace(r["id"])
-            for r in self._all("SELECT id FROM workspaces WHERE owner_id=? ORDER BY created_at", (owner,))
+            for r in self._all(
+                "SELECT w.id FROM workspaces w WHERE w.owner_id=? "
+                "AND NOT EXISTS (SELECT 1 FROM records r WHERE r.namespace='project_tombstones' AND r.key=w.id) "
+                "ORDER BY w.created_at",
+                (owner,),
+            )
         ]
+
+    def remove_project(self, owner: str, identity: str, expected_revision: int) -> dict:
+        with self.transaction():
+            self.active_workspace(identity, owner)
+            active = self._one(
+                "SELECT id FROM runs WHERE workspace_id=? "
+                "AND status NOT IN ('completed','failed','cancelled') LIMIT 1",
+                (identity,),
+            )
+            if active:
+                raise HarnessError("PROJECT_BUSY", "项目还有运行或待处理任务，请结束后再移除", 409)
+            removed_at = utc_now()
+            changed = self._exec(
+                "UPDATE workspaces SET revision=revision+1 WHERE id=? AND revision=?",
+                (identity, expected_revision),
+            )
+            if not changed:
+                raise HarnessError("REVISION_CONFLICT", "项目已更新，请刷新后重试", 409)
+            receipt = {
+                "id": identity,
+                "removed": True,
+                "removed_at": removed_at,
+                "revision": expected_revision + 1,
+            }
+            self.put("project_tombstones", identity, receipt)
+            return receipt
 
     def create_session(self, workspace_id: str, title: str, agent: str) -> dict:
         sid, bid = new_id(), new_id()

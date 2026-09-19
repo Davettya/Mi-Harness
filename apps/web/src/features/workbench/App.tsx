@@ -1,6 +1,14 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { api, ApiError, Command } from "../../api/client";
-import type { ArtifactRef, SubmitRunInput } from "../../api/types";
+import type { SubmitRunInput } from "../../api/types";
 import {
   array,
   id,
@@ -8,7 +16,6 @@ import {
   number,
   object,
   string,
-  textParts,
   timestamp,
   type ObjectValue,
 } from "../../api/values";
@@ -18,7 +25,6 @@ import {
   JsonDetail,
   Modal,
   Notice,
-  SafeText,
   Status,
 } from "../../components/common";
 import { InteractionCard } from "../interactions/InteractionCard";
@@ -26,34 +32,39 @@ import { Inspector, type Panel } from "../inspectors/Inspector";
 import { Settings } from "../settings/Settings";
 import { connectLaunch } from "../../state/launch";
 import { MarkdownText } from "../../components/MarkdownText";
+import { Composer } from "./Composer";
+import { ConversationMessage } from "./ConversationMessage";
+import {
+  ModelSelector,
+  productModels,
+  visibleModelSelection,
+} from "./ModelSelector";
+import { ModeSelector } from "./ModeSelector";
+import {
+  emptyDraft,
+  restoreDraft,
+  toContentParts,
+  type DraftBlock,
+} from "./composer-state";
 import { useRun } from "../../state/use-run";
 import { streamText, terminal } from "../../state/run-reducer";
+import {
+  MAX_SIDEBAR_WIDTH,
+  MIN_SIDEBAR_WIDTH,
+  clampSidebarWidth,
+  keyboardSidebarWidth,
+  loadProjectSessionGroups,
+  storedSidebarWidth,
+} from "./sidebar-state";
 
 function savedSelection() {
   try {
-    return object(JSON.parse(localStorage.getItem("harness.selection") || "{}"));
+    return object(
+      JSON.parse(localStorage.getItem("harness.selection") || "{}"),
+    );
   } catch {
     return {};
   }
-}
-
-function MessageContent({ message }: { message: ObjectValue }) {
-  const text = textParts(message.content_parts);
-  if (message.role === "tool") {
-    try {
-      const value = object(JSON.parse(text));
-      if (value.summary)
-        return (
-          <>
-            <SafeText text={string(value.summary)} />
-            <JsonDetail value={value} label="完整工具结果" />
-          </>
-        );
-    } catch {
-      /* Plain text tool output stays inert. */
-    }
-  }
-  return message.role === "assistant" ? <MarkdownText text={text} /> : <SafeText text={text} />;
 }
 
 function Pairing({ onPaired }: { onPaired: () => void }) {
@@ -64,12 +75,12 @@ function Pairing({ onPaired }: { onPaired: () => void }) {
     <main className="pairing">
       <section>
         <div className="brand-mark">
-          h<span>·</span>
+          mi<span>·</span>
         </div>
         <div className="eyebrow">YOUR LOCAL AGENT WORKSPACE</div>
         <h1>让想法开始行动。</h1>
         <p>
-          请通过启动脚本自动连接。需要手动连接时，可使用 harness pair
+          请通过启动脚本自动连接。需要手动连接时，可使用 mi-harness pair
           生成备用口令。
         </p>
         <form
@@ -127,38 +138,59 @@ export function App() {
   const [authError, setAuthError] = useState<unknown>();
   const [settings, setSettings] = useState(false);
   const [workspaces, setWorkspaces] = useState<ObjectValue[]>([]);
-  const [workspaceId, setWorkspaceId] = useState<string>(
-    () => string(savedSelection().project),
+  const [workspaceId, setWorkspaceId] = useState<string>(() =>
+    string(savedSelection().project),
   );
   const [projectSessions, setProjectSessions] = useState<
     Record<string, ObjectValue[]>
   >({});
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [sessionId, setSessionId] = useState<string>(
-    () => string(savedSelection().session),
+  const [sessionId, setSessionId] = useState<string>(() =>
+    string(savedSelection().session),
   );
   const [session, setSession] = useState<ObjectValue>({});
   const [runId, setRunId] = useState("");
   const [branchId, setBranchId] = useState("");
-  const [agents, setAgents] = useState<ObjectValue[]>([]);
-  const [agentId, setAgentId] = useState("default");
-  const [newSessionAgent, setNewSessionAgent] = useState("default");
+  const [models, setModels] = useState<ObjectValue[]>([]);
+  const [preferences, setPreferences] = useState<ObjectValue>({
+    revision: 1,
+    mode: "react",
+  });
+  const [mode, setMode] = useState<"react" | "plan">("react");
+  const [modelRef, setModelRef] = useState("");
+  const [pinnedModel, setPinnedModel] = useState(false);
   const [skills, setSkills] = useState<ObjectValue[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [attachments, setAttachments] = useState<Record<string, ObjectValue[]>>(
-    {},
-  );
+  const [drafts, setDrafts] = useState<Record<string, DraftBlock[]>>(() => {
+    try {
+      return Object.fromEntries(
+        Object.entries(
+          JSON.parse(localStorage.getItem("harness.drafts.v2") || "{}"),
+        ).map(([k, v]) => [k, restoreDraft(v as DraftBlock[])]),
+      );
+    } catch {
+      return {};
+    }
+  });
   const [pending, setPending] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  useEffect(() => {
+    try {
+      localStorage.setItem("harness.drafts.v2", JSON.stringify(drafts));
+    } catch {
+      /* optional draft persistence */
+    }
+  }, [drafts]);
   const [error, setError] = useState<unknown>();
   const [receipt, setReceipt] = useState("");
+  const [planReview, setPlanReview] = useState<ObjectValue | null>(null);
   const [retry, setRetry] = useState<Command<SubmitRunInput> | null>(null);
   const [panel, setPanel] = useState<Panel | null>(null);
   const [navigationOpen, setNavigationOpen] = useState(false);
-  const [archived, setArchived] = useState(() => savedSelection().archived === true);
+  const [showArchived, setShowArchived] = useState(
+    () => savedSelection().archived === true,
+  );
   const [modal, setModal] = useState<
-    "workspace" | "rename" | "branch" | "steer" | null
+    "workspace" | "removeProject" | "rename" | "branch" | "steer" | null
   >(null);
   const [modalText, setModalText] = useState("");
   const [rootPaths, setRootPaths] = useState<string[]>([""]);
@@ -171,13 +203,31 @@ export function App() {
       try {
         localStorage.setItem(
           "harness.selection",
-          JSON.stringify({ project: workspaceId, session: sessionId, archived }),
+          JSON.stringify({
+            project: workspaceId,
+            session: sessionId,
+            archived: showArchived,
+          }),
         );
       } catch {
         /* Browser storage is optional. */
       }
     }
-  }, [workspaceId, sessionId, archived]);
+  }, [workspaceId, sessionId, showArchived]);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    try {
+      return storedSidebarWidth(localStorage.getItem("harness.sidebar.width"));
+    } catch {
+      return storedSidebarWidth(null);
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("harness.sidebar.width", String(sidebarWidth));
+    } catch {
+      /* Browser storage is optional. */
+    }
+  }, [sidebarWidth]);
   const [messageLimit, setMessageLimit] = useState(100);
   useEffect(() => setMessageLimit(100), [runId]);
   const conversationRef = useRef<HTMLDivElement>(null);
@@ -197,34 +247,78 @@ export function App() {
     if (element && followLatest.current)
       element.scrollTop = element.scrollHeight;
   }, [run.messages, run.streams, run.interactions]);
-  const fileInput = useRef<HTMLInputElement>(null);
   const sessionRequest = useRef(0);
+  const sessionListRequest = useRef(0);
+  const sidebarResize = useRef<{
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+  } | null>(null);
+  const beginSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    sidebarResize.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const continueSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = sidebarResize.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setSidebarWidth(
+      clampSidebarWidth(drag.startWidth + event.clientX - drag.startX),
+    );
+  };
+  const endSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (sidebarResize.current?.pointerId !== event.pointerId) return;
+    sidebarResize.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId))
+      event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+  const resizeSidebarWithKeyboard = (
+    event: ReactKeyboardEvent<HTMLDivElement>,
+  ) => {
+    const next = keyboardSidebarWidth(sidebarWidth, event.key);
+    if (next === null) return;
+    event.preventDefault();
+    setSidebarWidth(next);
+  };
   const composerKey = sessionId || `workspace:${workspaceId}`;
-  const draft = drafts[composerKey] ?? "";
-  const attached = attachments[composerKey] ?? [];
-  const currentAgent = agents.find((value) => id(value) === agentId);
+  const blocks = drafts[composerKey] ?? [
+    { id: "initial", type: "text" as const, text: "" },
+  ];
+  const draft = blocks
+    .filter((b) => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
+  const attached = blocks.filter((b) => b.type !== "text");
+  const uploading = attached.some((b) => b.state !== "ready");
+  const changeBlocks = (update: (old: DraftBlock[]) => DraftBlock[]) => {
+    setDrafts((previous) => ({
+      ...previous,
+      [composerKey]: update(previous[composerKey] ?? blocks),
+    }));
+    setRetry(null);
+  };
   const branches = array(session.branches).map(object);
   const currentBranch =
     branches.find(
       (branch) => id(branch) === branchId || branch.branch_id === branchId,
     ) ?? object(session.branch ?? session.default_branch);
   const runList = array(session.runs).map(object);
+  const selectedSessionArchived = Boolean(
+    session.archived_at ?? object(session.session).archived_at,
+  );
   const selectRun = (nextRunId: string) => {
     setRunId(nextRunId);
     const selectedRun = runList.find((value) => id(value) === nextRunId);
     if (selectedRun?.branch_id) setBranchId(string(selectedRun.branch_id));
   };
-  const setDraft = (text: string) => {
-    setDrafts((previous) => ({ ...previous, [composerKey]: text }));
-    setRetry(null);
-  };
-
   async function authenticate() {
     setAuthLoading(true);
     setAuthError(null);
     try {
-      await connectLaunch();
-      setAuth(await api.authSession());
+      setAuth(await connectLaunch());
     } catch (error) {
       if (!(error instanceof ApiError && error.status === 401))
         setAuthError(error);
@@ -239,7 +333,7 @@ export function App() {
   async function loadCatalogs() {
     const results = await Promise.allSettled([
       api.workspaces(),
-      api.agents(),
+      api.availableModels(sessionId || undefined),
       api.skills(),
     ]);
     results.forEach((result, index) => {
@@ -256,38 +350,47 @@ export function App() {
             : id(values[0]),
         );
       }
-      if (index === 1) setAgents(items(result.value));
+      if (index === 1) {
+        const visible = productModels(items(result.value));
+        setModels(visible);
+        const catalog = object(result.value);
+        setPinnedModel(Boolean(catalog.pinned_profile_ref));
+        setModelRef((old) =>
+          visibleModelSelection(
+            visible,
+            old,
+            string(catalog.default_profile_ref),
+          ),
+        );
+      }
       if (index === 2) setSkills(items(result.value));
     });
   }
   useEffect(() => {
     if (auth) void loadCatalogs();
   }, [auth]);
-  const refreshSessions = async () => {
-    const groups = await Promise.all(
-      workspaces.map(
-        async (project) =>
-          [
-            id(project),
-            items(await api.sessions(id(project), archived)),
-          ] as const,
-      ),
+  const refreshSessions = async (archivedView = showArchived) => {
+    const requestId = ++sessionListRequest.current;
+    const groups = await loadProjectSessionGroups(
+      workspaces.map(id),
+      archivedView,
+      async (projectId, includeArchived) =>
+        items(await api.sessions(projectId, includeArchived)),
     );
-    setProjectSessions(Object.fromEntries(groups));
+    if (requestId === sessionListRequest.current) setProjectSessions(groups);
   };
   useEffect(() => {
     let active = true;
-    void Promise.all(
-      workspaces.map(
-        async (project) =>
-          [
-            id(project),
-            items(await api.sessions(id(project), archived)),
-          ] as const,
-      ),
+    const requestId = ++sessionListRequest.current;
+    void loadProjectSessionGroups(
+      workspaces.map(id),
+      showArchived,
+      async (projectId, includeArchived) =>
+        items(await api.sessions(projectId, includeArchived)),
     )
       .then((groups) => {
-        if (active) setProjectSessions(Object.fromEntries(groups));
+        if (active && requestId === sessionListRequest.current)
+          setProjectSessions(groups);
       })
       .catch((error) => {
         if (active) setError(error);
@@ -295,7 +398,7 @@ export function App() {
     return () => {
       active = false;
     };
-  }, [workspaces, archived]);
+  }, [workspaces, showArchived]);
   function selectConversation(project: string, conversation: string) {
     if (project === workspaceId && conversation === sessionId) return;
     ++sessionRequest.current;
@@ -313,17 +416,14 @@ export function App() {
       const value = await api.createSession(
         new Command({
           workspace_id: project,
-          agent_spec_id: newSessionAgent,
+          agent_spec_id: "default",
           title: "新会话",
         }),
       );
-      setArchived(false);
+      setShowArchived(false);
       setCollapsed((previous) => ({ ...previous, [project]: false }));
       selectConversation(project, id(value));
-      setProjectSessions((previous) => ({
-        ...previous,
-        [project]: [value, ...(previous[project] || [])],
-      }));
+      await refreshSessions(false);
     } catch (error) {
       setError(error);
     } finally {
@@ -363,12 +463,22 @@ export function App() {
     const value = await api.session(target);
     if (requestId !== sessionRequest.current) return;
     setSession(value);
-    setAgentId(
-      string(
-        value.agent_spec_id ?? object(value.session).agent_spec_id,
-        "default",
+    const prefs = object(value.preferences);
+    setPreferences(prefs);
+    setMode(prefs.mode === "plan" ? "plan" : "react");
+    const catalog = await api.availableModels(target);
+    if (requestId !== sessionRequest.current) return;
+    const visible = productModels(items(catalog));
+    setModels(visible);
+    setModelRef(
+      visibleModelSelection(
+        visible,
+        string(catalog.pinned_profile_ref),
+        string(prefs.model_profile_ref),
+        string(catalog.default_profile_ref),
       ),
     );
+    setPinnedModel(Boolean(catalog.pinned_profile_ref));
     const defaultBranch = object(value.branch ?? value.default_branch);
     const available = array(value.branches).map(object);
     const initialBranch =
@@ -418,7 +528,7 @@ export function App() {
     const value = await api.createSession(
       new Command({
         workspace_id: workspaceId,
-        agent_spec_id: agentId,
+        agent_spec_id: "default",
         title: draft.slice(0, 48) || "新会话",
       }),
     );
@@ -426,10 +536,10 @@ export function App() {
       value.session_id,
       id(object(value.session)) || id(value),
     );
-    setDrafts((previous) => ({ ...previous, [newId]: draft }));
-    setAttachments((previous) => ({ ...previous, [newId]: attached }));
+    setDrafts((previous) => ({ ...previous, [newId]: blocks }));
+    setShowArchived(false);
     setSessionId(newId);
-    await refreshSessions();
+    await refreshSessions(false);
     return newId;
   }
   async function send(command?: Command<SubmitRunInput>) {
@@ -469,12 +579,10 @@ export function App() {
         new Command<SubmitRunInput>({
           branch_id: targetBranch,
           expected_branch_revision: revision,
-          agent_spec_revision: number(currentAgent?.revision, 1),
-          content_parts: draft.trim() ? [{ type: "text", text: draft }] : [],
-          attachment_refs: attached.map((artifact) => {
-            const { display_name: _name, ...reference } = artifact;
-            return reference as ArtifactRef;
-          }),
+          mode,
+          model_profile_ref: modelRef || undefined,
+          content_parts: toContentParts(blocks),
+          attachment_refs: [],
           selected_skill_refs: selectedSkills.map((skillId) => {
             const skill = skills.find((value) => id(value) === skillId);
             return {
@@ -489,13 +597,8 @@ export function App() {
       setReceipt("任务已由服务端受理。");
       setDrafts((previous) => ({
         ...previous,
-        [composerKey]: "",
-        [targetSession]: "",
-      }));
-      setAttachments((previous) => ({
-        ...previous,
-        [composerKey]: [],
-        [targetSession]: [],
+        [composerKey]: emptyDraft(),
+        [targetSession]: emptyDraft(),
       }));
       setRetry(null);
       await loadSession(targetSession);
@@ -511,32 +614,96 @@ export function App() {
       setPending(false);
     }
   }
-  async function upload(files: FileList | null) {
-    if (!files || !workspaceId) return;
-    setUploading(true);
+  async function chooseMode(next: "react" | "plan") {
+    setMode(next);
+    setRetry(null);
+    if (!sessionId) return;
+    setPending(true);
+    try {
+      setPreferences(
+        await api.savePreferences(
+          sessionId,
+          new Command({ expected_revision: preferences.revision, mode: next }),
+        ),
+      );
+    } catch (error) {
+      setError(error);
+      setPreferences(await api.preferences(sessionId));
+    } finally {
+      setPending(false);
+    }
+  }
+  async function chooseModel(ref: string) {
+    setModelRef(ref);
+    setRetry(null);
+    if (!sessionId) return;
+    setPending(true);
     setError(null);
     try {
-      for (const file of Array.from(files)) {
-        const reference = await api.upload(
-          workspaceId,
-          file,
-          crypto.randomUUID(),
+      if (
+        runId &&
+        run.serverStatus &&
+        !terminal(run.serverStatus) &&
+        string(run.snapshot.branch_id) === branchId
+      ) {
+        await api.selectModel(
+          runId,
+          new Command({
+            model_profile_ref: ref,
+            expected_control_revision: number(
+              object(run.snapshot.model_control).control_revision,
+            ),
+            persist_for_session: true,
+            expected_preferences_revision: preferences.revision,
+          }),
         );
-        setAttachments((previous) => ({
-          ...previous,
-          [composerKey]: [
-            ...(previous[composerKey] ?? []),
-            { ...reference, display_name: file.name },
-          ],
-        }));
-      }
+        await refreshRun();
+        setPreferences(await api.preferences(sessionId));
+      } else
+        setPreferences(
+          await api.savePreferences(
+            sessionId,
+            new Command({
+              expected_revision: preferences.revision,
+              model_profile_ref: ref,
+            }),
+          ),
+        );
+    } catch (error) {
+      setError(error);
+      setPreferences(await api.preferences(sessionId));
+      await refreshRun();
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function setSessionArchived(
+    projectId: string,
+    value: ObjectValue,
+    nextArchived: boolean,
+  ) {
+    setPending(true);
+    setError(null);
+    try {
+      const nested = object(value.session);
+      await api.updateSession(
+        id(value) || id(nested),
+        new Command({
+          archived: nextArchived,
+          expected_revision: number(value.revision ?? nested.revision),
+        }),
+      );
+      if (sessionId === (id(value) || id(nested)))
+        selectConversation(projectId, "");
+      await refreshSessions(showArchived);
     } catch (error) {
       setError(error);
     } finally {
-      setUploading(false);
-      if (fileInput.current) fileInput.current.value = "";
+      setPending(false);
     }
   }
+
   async function modalSubmit(event: FormEvent) {
     event.preventDefault();
     setPending(true);
@@ -556,6 +723,23 @@ export function App() {
           : await api.createWorkspace(new Command({ name: modalText, roots }));
         await loadCatalogs();
         if (!editingProject) selectConversation(id(result), "");
+      }
+      if (modal === "removeProject" && editingProject) {
+        const projectId = id(editingProject);
+        await api.removeProject(
+          projectId,
+          new Command({ expected_revision: number(editingProject.revision) }),
+        );
+        const values = items(await api.workspaces());
+        setWorkspaces(values);
+        setProjectSessions((previous) => {
+          const next = { ...previous };
+          delete next[projectId];
+          return next;
+        });
+        if (workspaceId === projectId) selectConversation(id(values[0]), "");
+        setEditingProject(null);
+        setReceipt("项目已从 Mi Harness 移除；电脑上的源文件未被修改。");
       }
       if (modal === "rename") {
         await api.updateSession(
@@ -635,7 +819,7 @@ export function App() {
     return (
       <div className="loading-screen">
         <div className="brand-mark">
-          h<span>·</span>
+          mi<span>·</span>
         </div>
         <p>正在连接本地工作台…</p>
       </div>
@@ -656,14 +840,17 @@ export function App() {
       />
     );
   return (
-    <div className={`workbench ${panel ? "with-inspector" : ""}`}>
+    <div
+      className={`workbench ${panel ? "with-inspector" : ""}`}
+      style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+    >
       <aside className={`sidebar ${navigationOpen ? "open" : ""}`}>
         <div className="brand">
           <div className="brand-mark small">
-            h<span>·</span>
+            mi<span>·</span>
           </div>
           <span>
-            harness<small>LOCAL WORKSPACE</small>
+            Mi Harness<small>LOCAL WORKSPACE</small>
           </span>
           <button
             className="mobile-only icon-button"
@@ -680,23 +867,17 @@ export function App() {
           </button>
         </div>
         <div className="section-caption">
-          <span>{archived ? "已归档会话" : "所有项目与会话"}</span>
+          <span>{showArchived ? "已归档会话" : "所有项目与会话"}</span>
           <button
             className="text-button"
             onClick={() => {
-              setArchived(!archived);
+              setShowArchived(!showArchived);
               selectConversation(workspaceId, "");
             }}
           >
-            {archived ? "返回" : "归档"}
+            {showArchived ? "返回" : "查看归档"}
           </button>
         </div>
-        {agents.length > 1 && <label className="new-session-agent">
-          新会话使用
-          <select aria-label="新会话 Agent" value={newSessionAgent} onChange={(event) => setNewSessionAgent(event.target.value)}>
-            {agents.map((agent) => <option key={id(agent)} value={id(agent)}>{string(agent.name, id(agent))}</option>)}
-          </select>
-        </label>}
         <nav className="project-list" aria-label="项目与会话">
           {workspaces.map((project) => {
             const projectId = id(project);
@@ -750,28 +931,50 @@ export function App() {
                 {!collapsed[projectId] && (
                   <div className="session-list project-conversations">
                     {conversations.map((value) => (
-                      <button
+                      <div
                         key={id(value)}
-                        className={sessionId === id(value) ? "active" : ""}
-                        onClick={() => selectConversation(projectId, id(value))}
+                        className={`session-node ${sessionId === id(value) ? "active" : ""}`}
                       >
-                        <span className="session-symbol">◇</span>
-                        <span>
-                          <strong>{string(value.title, "新会话")}</strong>
-                          <small>{timestamp(value.updated_at)}</small>
-                        </span>
-                      </button>
+                        <button
+                          className="session-select"
+                          onClick={() =>
+                            selectConversation(projectId, id(value))
+                          }
+                        >
+                          <span className="session-symbol">◇</span>
+                          <span>
+                            <strong>{string(value.title, "新会话")}</strong>
+                            <small>{timestamp(value.updated_at)}</small>
+                          </span>
+                        </button>
+                        <button
+                          className="session-archive-action"
+                          aria-label={`${showArchived ? "取消归档" : "归档"}会话 ${string(value.title, "新会话")}`}
+                          title={showArchived ? "取消归档" : "归档"}
+                          disabled={pending}
+                          onClick={() =>
+                            void setSessionArchived(
+                              projectId,
+                              value,
+                              !showArchived,
+                            )
+                          }
+                        >
+                          {showArchived ? "恢复" : "归档"}
+                        </button>
+                      </div>
                     ))}
-                    {!conversations.length && (
+                    {!conversations.length && !showArchived && (
                       <button
                         className="project-empty"
                         disabled={pending}
                         onClick={() => void startSession(projectId)}
                       >
-                        {archived
-                          ? "暂无归档会话 · 新建会话"
-                          : "＋ 新建第一个会话"}
+                        ＋ 新建第一个会话
                       </button>
+                    )}
+                    {!conversations.length && showArchived && (
+                      <div className="project-empty">暂无归档会话</div>
                     )}
                   </div>
                 )}
@@ -798,11 +1001,10 @@ export function App() {
             onClick={async () => {
               try {
                 await api.logout();
-                setAuth(null);
                 setDrafts({});
-                setAttachments({});
                 setSession({});
                 setRunId("");
+                await authenticate();
               } catch (error) {
                 setError(error);
               }
@@ -811,6 +1013,21 @@ export function App() {
             断开连接
           </button>
         </footer>
+        <div
+          className="sidebar-resizer"
+          role="separator"
+          aria-label="调整侧栏宽度"
+          aria-orientation="vertical"
+          aria-valuemin={MIN_SIDEBAR_WIDTH}
+          aria-valuemax={MAX_SIDEBAR_WIDTH}
+          aria-valuenow={sidebarWidth}
+          tabIndex={0}
+          onPointerDown={beginSidebarResize}
+          onPointerMove={continueSidebarResize}
+          onPointerUp={endSidebarResize}
+          onPointerCancel={endSidebarResize}
+          onKeyDown={resizeSidebarWithKeyboard}
+        />
       </aside>
       <main className="main-workspace">
         <header className="topbar">
@@ -850,28 +1067,15 @@ export function App() {
                 <button
                   className="text-button"
                   disabled={pending}
-                  onClick={async () => {
-                    setPending(true);
-                    try {
-                      await api.updateSession(
-                        sessionId,
-                        new Command({
-                          archived: !archived,
-                          expected_revision:
-                            session.revision ??
-                            object(session.session).revision,
-                        }),
-                      );
-                      await refreshSessions();
-                      setSessionId("");
-                    } catch (error) {
-                      setError(error);
-                    } finally {
-                      setPending(false);
-                    }
-                  }}
+                  onClick={() =>
+                    void setSessionArchived(
+                      workspaceId,
+                      session,
+                      !selectedSessionArchived,
+                    )
+                  }
                 >
-                  {archived ? "取消归档" : "归档"}
+                  {selectedSessionArchived ? "取消归档" : "归档"}
                 </button>
               </>
             )}
@@ -972,6 +1176,24 @@ export function App() {
                 ))}
               </select>
             )}
+            {run.snapshot.mode === "plan" &&
+              run.serverStatus === "completed" && (
+                <button
+                  onClick={async () => {
+                    try {
+                      const result = await api.context(runId);
+                      const plan = object(result.plan);
+                      if (!plan.plan_id)
+                        throw new Error("本次运行未保存可执行的计划记录");
+                      setPlanReview(plan);
+                    } catch (error) {
+                      setError(error);
+                    }
+                  }}
+                >
+                  审阅并执行计划
+                </button>
+              )}
             {capabilities.branches === true && (
               <button
                 className="text-button"
@@ -1025,7 +1247,7 @@ export function App() {
               <div className="eyebrow">SPACE TO THINK. TOOLS TO DO.</div>
               <h1>今天，我们完成什么？</h1>
               <p>
-                描述你的目标。Harness 会保留过程、调用工具，
+                描述你的目标。Mi Harness 会保留过程、调用工具，
                 <br />
                 在需要你做决定时停下来。
               </p>
@@ -1035,7 +1257,14 @@ export function App() {
                   "阅读资料，整理带来源的研究笔记",
                   "制定计划，并逐步完成一个开发任务",
                 ].map((text, index) => (
-                  <button key={text} onClick={() => setDraft(text)}>
+                  <button
+                    key={text}
+                    onClick={() =>
+                      changeBlocks(() => [
+                        { id: crypto.randomUUID(), type: "text", text },
+                      ])
+                    }
+                  >
                     <span>0{index + 1}</span>
                     {text}
                     <b>↗</b>
@@ -1067,54 +1296,17 @@ export function App() {
           {Object.values(run.messages)
             .slice(-messageLimit)
             .map((message) => (
-              <article
-                className={`message ${string(message.role)}`}
+              <ConversationMessage
                 key={string(message.message_id)}
-              >
-                <div className="message-avatar">
-                  {message.role === "user"
-                    ? "你"
-                    : message.role === "tool"
-                      ? "◇"
-                      : "h·"}
-                </div>
-                <div className="message-body">
-                  <div className="message-heading">
-                    {message.role === "user"
-                      ? "你"
-                      : message.role === "tool"
-                        ? "工具结果"
-                        : "Harness"}
-                    {message.model_attempt_id != null && <small>已提交</small>}
-                  </div>
-                  <MessageContent message={message} />
-                  {array(message.content_parts)
-                    .map(object)
-                    .filter(
-                      (part) =>
-                        part.type === "file_reference" || part.type === "image",
-                    )
-                    .map((part) => {
-                      const artifact = object(part.artifact_ref);
-                      return (
-                        <a
-                          className="attachment-link"
-                          key={string(artifact.artifact_id)}
-                          href={api.artifactUrl(string(artifact.artifact_id))}
-                        >
-                          {string(part.label ?? part.alt, "查看附件")} ↗
-                        </a>
-                      );
-                    })}
-                </div>
-              </article>
+                message={message}
+              />
             ))}
           {Object.values(run.streams).map((stream) => (
             <article className="message assistant" key={stream.streamId}>
-              <div className="message-avatar">h·</div>
+              <div className="message-avatar">Mi</div>
               <div className="message-body">
                 <div className="message-heading">
-                  Harness{" "}
+                  Mi Harness{" "}
                   <small>
                     {stream.interrupted
                       ? "连接中断，等待已提交结果"
@@ -1151,6 +1343,15 @@ export function App() {
         </div>
         <section className="composer-area">
           <ErrorNotice error={error} />
+          {error instanceof ApiError && error.code === "VISION_UNVERIFIED" && (
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => setSettings(true)}
+            >
+              前往设置验证图片能力 →
+            </button>
+          )}
           {connectionError && runId && (
             <Notice>{connectionError} 浏览器连接变化不会取消任务。</Notice>
           )}
@@ -1166,134 +1367,101 @@ export function App() {
               void send();
             }}
           >
-            <textarea
-              aria-label="任务目标"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              rows={3}
-              placeholder={
-                runId && !terminal(run.serverStatus)
-                  ? "添加一个新任务，它将在当前任务之后排队…"
-                  : "描述目标，或添加文件作为参考…"
-              }
-              onKeyDown={(event) => {
-                if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-                  event.preventDefault();
-                  if (!pending && !uploading) void send();
-                }
+            <Composer
+              key={composerKey}
+              blocks={blocks}
+              onChange={changeBlocks}
+              workspace={workspaceId}
+              disabled={pending}
+              onSend={() => {
+                if (!pending && !uploading) void send();
               }}
-            />
-            <div className="attachment-list">
-              {attached.map((artifact) => (
-                <span key={string(artifact.artifact_id)}>
-                  {string(artifact.display_name, "附件")}
-                  <button
-                    type="button"
-                    aria-label="移除此附件"
-                    onClick={() => {
-                      setAttachments((previous) => ({
-                        ...previous,
-                        [composerKey]: attached.filter(
-                          (value) => value !== artifact,
-                        ),
-                      }));
-                      setRetry(null);
-                    }}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-            <div className="composer-bottom">
-              <div className="composer-options">
+              sendButton={
                 <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="添加附件"
-                  disabled={!workspaceId || uploading}
-                  onClick={() => fileInput.current?.click()}
-                >
-                  ＋
-                </button>
-                <input
-                  type="file"
-                  multiple
-                  hidden
-                  ref={fileInput}
-                  onChange={(event) => void upload(event.target.files)}
-                />
-                <select
-                  aria-label="选择 Agent"
-                  value={agentId}
-                  disabled={Boolean(sessionId)}
-                  title={
-                    sessionId
-                      ? "Agent 已绑定此会话；可在侧栏选择新会话使用的 Agent"
-                      : "选择此会话的 Agent"
+                  className="send-button"
+                  type="submit"
+                  disabled={
+                    pending || uploading || (!draft.trim() && !attached.length)
                   }
-                  onChange={(event) => {
-                    setAgentId(event.target.value);
-                    setRetry(null);
-                  }}
+                  aria-label="发送任务"
+                  title={
+                    pending
+                      ? "提交中…"
+                      : uploading
+                        ? "附件尚未就绪"
+                        : "发送任务 (Ctrl + Enter)"
+                  }
                 >
-                  <option value="default">默认 Agent</option>
-                  {agents
-                    .filter((agent) => id(agent) !== "default")
-                    .map((agent) => (
-                      <option key={id(agent)} value={id(agent)}>
-                        {string(agent.name, id(agent))}
-                      </option>
-                    ))}
-                </select>
-                {skills.length > 0 && (
-                  <details className="skill-picker">
-                    <summary>
-                      Skills{" "}
-                      {selectedSkills.length > 0
-                        ? `(${selectedSkills.length})`
-                        : ""}
-                    </summary>
-                    <div>
-                      {skills
-                        .filter((skill) => skill.enabled !== false)
-                        .map((skill) => (
-                          <label key={id(skill)}>
-                            <input
-                              type="checkbox"
-                              checked={selectedSkills.includes(id(skill))}
-                              onChange={(event) => {
-                                setSelectedSkills((previous) =>
-                                  event.target.checked
-                                    ? [...previous, id(skill)]
-                                    : previous.filter(
-                                        (value) => value !== id(skill),
-                                      ),
-                                );
-                                setRetry(null);
-                              }}
-                            />
-                            {string(skill.name, id(skill))}
-                          </label>
-                        ))}
-                    </div>
-                  </details>
-                )}
-              </div>
-              <button
-                className="send-button"
-                disabled={
-                  pending || uploading || (!draft.trim() && !attached.length)
+                  <span aria-hidden="true">{pending ? "⋯" : "↑"}</span>
+                </button>
+              }
+            >
+              <ModeSelector
+                mode={mode}
+                currentMode={
+                  runId && !terminal(run.serverStatus)
+                    ? string(run.snapshot.mode)
+                    : undefined
                 }
-                aria-label="发送任务"
-              >
-                {pending ? "提交中…" : uploading ? "上传中…" : "开始任务 ↑"}
-              </button>
-            </div>
+                onChange={(next) => void chooseMode(next)}
+                disabled={pending}
+              />
+              <ModelSelector
+                models={models}
+                selected={modelRef}
+                control={object(run.snapshot.model_control)}
+                onChange={(ref) => void chooseModel(ref)}
+                disabled={
+                  pending ||
+                  pinnedModel ||
+                  (Boolean(runId) &&
+                    !terminal(run.serverStatus) &&
+                    capabilities.hot_model_selection === false)
+                }
+              />
+              {skills.length > 0 && (
+                <details className="skill-picker">
+                  <summary>
+                    Skills{" "}
+                    {selectedSkills.length > 0
+                      ? `(${selectedSkills.length})`
+                      : ""}
+                  </summary>
+                  <div>
+                    {skills
+                      .filter((skill) => skill.enabled !== false)
+                      .map((skill) => (
+                        <label key={id(skill)}>
+                          <input
+                            type="checkbox"
+                            checked={selectedSkills.includes(id(skill))}
+                            onChange={(event) => {
+                              setSelectedSkills((previous) =>
+                                event.target.checked
+                                  ? [...previous, id(skill)]
+                                  : previous.filter(
+                                      (value) => value !== id(skill),
+                                    ),
+                              );
+                              setRetry(null);
+                            }}
+                          />
+                          {string(skill.name, id(skill))}
+                        </label>
+                      ))}
+                  </div>
+                </details>
+              )}
+            </Composer>
+            {uploading && (
+              <small className="composer-upload-status" role="status">
+                附件上传中或上传失败，请等待完成或重试 / 移除。
+              </small>
+            )}
           </form>
           <div className="composer-footnote">
             <span>
-              {currentAgent?.model_profile_id === "demo"
+              {modelRef === "demo@1"
                 ? "当前使用确定性演示模型"
                 : "执行与授权以服务端记录为准"}
             </span>
@@ -1315,11 +1483,49 @@ export function App() {
           onClose={() => setPanel(null)}
         />
       )}
+      {planReview && (
+        <Modal title="确认按此计划执行" onClose={() => setPlanReview(null)}>
+          <JsonDetail value={planReview.steps} label="计划步骤" />
+          <p>
+            确认后在当前分支创建 ReAct
+            任务。每次写入、命令或外部副作用仍需遵守权限和具体审批。
+          </p>
+          <button
+            disabled={pending}
+            onClick={() => {
+              const command = new Command<SubmitRunInput>({
+                branch_id: branchId,
+                expected_branch_revision: number(currentBranch.revision, 1),
+                mode: "react",
+                model_profile_ref: modelRef,
+                content_parts: [
+                  {
+                    type: "text",
+                    text:
+                      "执行已确认计划：\n" + JSON.stringify(planReview.steps),
+                  },
+                ],
+                plan_confirmation: {
+                  plan_id: planReview.plan_id,
+                  revision: planReview.revision,
+                  content_hash: planReview.content_hash,
+                  confirmed: true,
+                },
+              });
+              setPlanReview(null);
+              void send(command);
+            }}
+          >
+            确认并开始 ReAct 任务
+          </button>
+        </Modal>
+      )}
       {modal && (
         <Modal
           title={
             {
               workspace: editingProject ? "项目设置" : "添加项目",
+              removeProject: "从 Mi Harness 移除项目",
               rename: "重命名会话",
               branch: "创建会话分支",
               steer: "调整当前任务",
@@ -1338,6 +1544,13 @@ export function App() {
                   }
                   label="分支起点"
                 />
+              </Notice>
+            ) : modal === "removeProject" ? (
+              <Notice tone="error">
+                只会从 Mi Harness 的项目列表中移除“
+                {string(editingProject?.name, "此项目")}
+                ”。电脑上的所有源文件都不会被删除或移动；
+                该项目及其会话将从侧栏隐藏。
               </Notice>
             ) : (
               <label>
@@ -1405,6 +1618,15 @@ export function App() {
                     手动添加路径
                   </button>
                 </div>
+                {editingProject && (
+                  <button
+                    type="button"
+                    className="danger project-remove-button"
+                    onClick={() => openModal("removeProject")}
+                  >
+                    从 Mi Harness 移除项目…
+                  </button>
+                )}
               </div>
             )}
             {modal === "steer" && (
@@ -1414,7 +1636,7 @@ export function App() {
             )}
             <ErrorNotice error={error} />
             <button
-              className="primary"
+              className={modal === "removeProject" ? "danger" : "primary"}
               disabled={
                 pending ||
                 pickingFolder ||
@@ -1426,7 +1648,9 @@ export function App() {
                 ? "正在提交…"
                 : modal === "branch"
                   ? "创建分支"
-                  : "保存并提交"}
+                  : modal === "removeProject"
+                    ? "确认仅从 Harness 移除"
+                    : "保存并提交"}
             </button>
           </form>
         </Modal>

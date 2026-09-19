@@ -7,6 +7,8 @@ import {
   mergeModelChoices,
   modelDraftError,
   modelSetupBody,
+  modelVerificationState,
+  modelCheckLabel,
   switchModelProvider,
 } from "./model-setup-state";
 
@@ -33,6 +35,7 @@ describe("model configuration intent", () => {
     expect(modelSetupBody(draft, true, true)).toEqual({
       provider_id: "openai",
       model_id: "existing",
+      context_window: 300000,
       profile_id: "saved",
       expected_revision: 4,
     });
@@ -63,6 +66,7 @@ describe("model configuration intent", () => {
       savedKey: false,
       profileId: "saved",
       expectedRevision: 4,
+      contextWindow: 300000,
     });
     expect(canReuseModelKey(switched)).toBe(false);
     expect(canReuseModelKey(switchModelProvider(switched, "openai"))).toBe(
@@ -80,6 +84,24 @@ describe("model configuration intent", () => {
     expect(modelSetupBody(draft)).toEqual({
       provider_id: "ollama",
       model_id: "my-local-model:custom",
+      context_window: 300000,
+    });
+  });
+  it("preserves an explicit 1M profile and sends the selected context window", () => {
+    const draft = editModelDraft(
+      {
+        id: "large-context",
+        revision: 2,
+        provider_id: "custom",
+        model_id: "million-token-model",
+        limits: { context_window: 1000000 },
+      },
+      providers,
+    );
+    expect(draft.contextWindow).toBe(1000000);
+    expect(modelSetupBody(draft)).toMatchObject({
+      model_id: "million-token-model",
+      context_window: 1000000,
     });
   });
   it("only custom accepts an explicit endpoint, and userinfo in a URL is rejected", () => {
@@ -150,5 +172,67 @@ describe("model configuration intent", () => {
       api_key: "new-fixture-key",
       profile_id: "proxy",
     });
+  });
+});
+
+describe("model verification admission", () => {
+  const result = {
+    connected: true,
+    tool_calling: true,
+    probe_mode: "agent" as const,
+    verification_token: "receipt",
+    checks: {
+      transport: true,
+      text: true,
+      tool_calling: true,
+      tool_pairing: true,
+      vision: true,
+      streaming: true,
+    },
+  };
+  it("never treats connectivity or a missing receipt as permission to activate", () => {
+    expect(
+      modelVerificationState({ ...result, probe_mode: "connectivity" }).ready,
+    ).toBe(false);
+    expect(
+      modelVerificationState({ ...result, verification_token: undefined })
+        .ready,
+    ).toBe(false);
+    expect(
+      modelVerificationState({
+        ...result,
+        checks: { ...result.checks, tool_pairing: false },
+      }).ready,
+    ).toBe(false);
+  });
+  it("requires an explicit reduced-capability choice for exactly the unverified capabilities", () => {
+    expect(modelVerificationState(result)).toEqual({
+      ready: true,
+      missing: [],
+      limited: false,
+    });
+    expect(
+      modelVerificationState({
+        ...result,
+        checks: { ...result.checks, vision: false },
+      }),
+    ).toEqual({ ready: true, missing: ["vision"], limited: true });
+  });
+  it("distinguishes untested, timeout and a wrong answer without declaring unsupported", () => {
+    expect(modelCheckLabel({ ...result, checks: {} }, "vision")).toBe("未检测");
+    expect(modelCheckLabel(result, "vision")).toBe("通过");
+    const failed = { ...result, checks: { vision: false } };
+    expect(
+      modelCheckLabel(
+        { ...failed, check_failures: { vision: "PROBE_TIMEOUT" } },
+        "vision",
+      ),
+    ).toBe("超时，请重试");
+    expect(
+      modelCheckLabel(
+        { ...failed, check_failures: { vision: "PROBE_RESPONSE_MISMATCH" } },
+        "vision",
+      ),
+    ).toBe("回答未满足检测要求");
   });
 });

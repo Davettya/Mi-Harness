@@ -70,6 +70,8 @@ class ToolGateway:
             raise HarnessError("TOOL_IDENTITY", "无效工具执行身份", 403)
         self.store.assert_fence(ctx)
         spec, executor = self.registry.get(name, self._version(ctx, name))
+        from harness.runtime.modes import enforce
+        enforce(self.store.get("snapshots", ctx.config_snapshot_id) or {}, spec)
         try:
             jsonschema.validate(args, spec.input_schema)
             args_digest = content_hash(args)

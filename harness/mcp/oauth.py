@@ -55,7 +55,7 @@ class CredentialTokenStorage(VaultTokenStorage):
 
 
 def create_oauth_provider(*, endpoint: str, redirect_uri: str, storage, redirect_handler,
-                          callback_handler, validate_resource_url, client_name="Local Agent Harness"):
+                          callback_handler, validate_resource_url, client_name="Mi Harness"):
     callback = urlsplit(redirect_uri)
     if callback.scheme not in ("http", "https") or not callback.hostname or callback.username or callback.fragment:
         raise ValueError("invalid OAuth callback URL")

@@ -39,7 +39,14 @@ export interface ModelSetupInput {
   profile_id?: string;
   base_url?: string;
   model_id?: string;
+  context_window?: 300000 | 1000000;
   expected_revision?: number;
+  verification_token?: string;
+  activate?: boolean;
+  probe_mode?: "agent" | "connectivity";
+  optional_checks?: ("vision" | "streaming")[];
+  refresh_verification?: boolean;
+  accept_unverified_capabilities?: ("vision" | "streaming")[];
 }
 export interface ModelDiscovery {
   items: ModelChoice[];
@@ -49,6 +56,15 @@ export interface ModelDiscovery {
 export interface ModelConnectionTest {
   connected: boolean;
   tool_calling: boolean;
+  verification_token?: string;
+  reused?: boolean;
+  checks?: Record<string, boolean>;
+  check_failures?: Record<string, string>;
+  probe_mode?: "agent" | "connectivity";
+  request_count?: number;
+  expires_in?: number;
+  duration_ms?: number;
+  optional_checks?: ("vision" | "streaming")[];
   message?: string;
 }
 export interface ModelSetupResult {
@@ -60,6 +76,13 @@ export interface ModelSetupResult {
 }
 
 const setupErrors: Record<string, string> = {
+  MODEL_CAPABILITIES_INCOMPLETE:
+    "部分能力未通过，原配置未修改。请完整检测后重试，或选择仅启用已验证能力。",
+  MODEL_FULL_VERIFICATION_REQUIRED:
+    "快速连接检测不能用于激活，请执行完整验证。",
+  MODEL_VERIFIED_DRAFT:
+    "已验证模型不能被草稿覆盖。请添加独立模型草稿，或验证后保存。",
+  MODEL_VERIFICATION_EXPIRED: "验证已过期或配置已变化，请重新验证。",
   MODEL_BASE_URL_INVALID: "自定义服务地址无效，请填写完整的 HTTP(S) URL。",
   MODEL_DEMO_READONLY: "本地演示配置无需编辑。请添加一个新的模型连接。",
   MODEL_PROVIDER_ENDPOINT: "此提供方使用固定服务地址，请重新选择提供方。",
@@ -243,7 +266,30 @@ export type ConfigKind =
 
 /** All routes live here. UI components never construct API URLs. */
 export const api = {
+  availableModels: (session?: string) =>
+    request<ObjectValue>(
+      `/api/models/available${session ? `?session_id=${resource(session)}` : ""}`,
+    ),
+  preferences: (session: string) =>
+    request<ObjectValue>(`/api/sessions/${resource(session)}/preferences`),
+  savePreferences: (session: string, command: Command) =>
+    mutate(`/api/sessions/${resource(session)}/preferences`, "PATCH", command),
+  selectModel: (run: string, command: Command) =>
+    mutate(`/api/runs/${resource(run)}/model-selection`, "POST", command),
+  mcpFile: () => request<ObjectValue>("/api/mcp-config/file"),
+  saveMcpFile: (command: Command) =>
+    mutate("/api/mcp-config/file", "PUT", command),
+  validateMcpFile: (text: string) =>
+    request<ObjectValue>("/api/mcp-config/validate", {
+      method: "POST",
+      command: new Command({ text }),
+    }),
+  reloadMcpFile: () =>
+    mutate("/api/mcp-config/reload", "POST", new Command({})),
+  revokeMcp: (server: string) =>
+    mutate(`/api/mcp/${resource(server)}/revoke`, "POST", new Command({})),
   authSession: () => request<AuthSessionView>("/api/auth/session"),
+  localPair: () => request("/api/auth/local", { method: "POST" }),
   exchange: (ticket: string) =>
     request("/api/auth/exchange", {
       method: "POST",
@@ -255,6 +301,10 @@ export const api = {
     mutate("/api/projects", "POST", command),
   updateProject: (project: string, command: Command) =>
     mutate(`/api/projects/${resource(project)}`, "PATCH", command),
+  removeProject: (
+    project: string,
+    command: Command<{ expected_revision: number }>,
+  ) => mutate(`/api/projects/${resource(project)}`, "DELETE", command),
   chooseFolder: () =>
     request<{ path: string | null; cancelled: boolean }>(
       "/api/local/folder-picker",

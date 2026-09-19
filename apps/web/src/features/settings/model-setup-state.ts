@@ -1,15 +1,25 @@
 import type {
   ModelChoice,
+  ModelConnectionTest,
   ModelProvider,
   ModelSetupInput,
 } from "../../api/client";
-import { id, number, string, type ObjectValue } from "../../api/values";
+import { id, number, object, string, type ObjectValue } from "../../api/values";
+
+export type ModelContextWindow = 300000 | 1000000;
+
+export function configuredContextWindow(profile: ObjectValue): ModelContextWindow {
+  return number(object(profile.limits).context_window) === 1000000
+    ? 1000000
+    : 300000;
+}
 
 export interface ModelDraft {
   providerId: string;
   modelId: string;
   apiKey: string;
   baseUrl: string;
+  contextWindow: ModelContextWindow;
   profileId?: string;
   expectedRevision?: number;
   originalProviderId?: string;
@@ -23,6 +33,7 @@ export const emptyModelDraft = (): ModelDraft => ({
   modelId: "",
   apiKey: "",
   baseUrl: "",
+  contextWindow: 300000,
   savedKey: false,
 });
 
@@ -47,6 +58,7 @@ export function editModelDraft(
     modelId: string(profile.model_id),
     apiKey: "",
     baseUrl: providerId === "custom" ? endpoint : "",
+    contextWindow: configuredContextWindow(profile),
     profileId: id(profile) || string(profile.profile_id),
     expectedRevision: number(profile.revision),
     originalProviderId: original,
@@ -67,6 +79,7 @@ export function switchModelProvider(
     modelId: "",
     apiKey: "",
     baseUrl: "",
+    contextWindow: 300000,
     savedKey: false,
     needsFreshKey: false,
     legacyEndpoint: false,
@@ -93,7 +106,12 @@ export function modelSetupBody(
     ...(draft.providerId === "custom" && draft.baseUrl.trim()
       ? { base_url: draft.baseUrl.trim() }
       : {}),
-    ...(includeModel ? { model_id: draft.modelId.trim() } : {}),
+    ...(includeModel
+      ? {
+          model_id: draft.modelId.trim(),
+          context_window: draft.contextWindow,
+        }
+      : {}),
     ...(includeRevision && draft.expectedRevision !== undefined
       ? { expected_revision: draft.expectedRevision }
       : {}),
@@ -136,4 +154,32 @@ export function mergeModelChoices(
   const byId = new Map(catalog.map((model) => [model.id, model]));
   for (const model of discovered) if (model.id) byId.set(model.id, model);
   return [...byId.values()];
+}
+
+/** A quick connection receipt never authorizes activation or reduced-capability saving. */
+export function modelVerificationState(result: ModelConnectionTest | null) {
+  const complete = result?.probe_mode === "agent";
+  const ready = Boolean(
+    complete &&
+      result?.verification_token &&
+      ["transport", "text", "tool_calling", "tool_pairing"].every(
+        (name) => result?.checks?.[name] === true,
+      ),
+  );
+  const missing = (["vision", "streaming"] as const).filter(
+    (name) => result?.checks?.[name] !== true,
+  );
+  return { ready, missing, limited: ready && missing.length > 0 };
+}
+
+export function modelCheckLabel(
+  result: ModelConnectionTest,
+  name: string,
+): string {
+  if (result.checks?.[name] === true) return "通过";
+  if (result.checks?.[name] !== false) return "未检测";
+  const failure = result.check_failures?.[name];
+  if (failure === "PROBE_TIMEOUT") return "超时，请重试";
+  if (failure === "PROBE_RESPONSE_MISMATCH") return "回答未满足检测要求";
+  return "未通过，请重试或检查服务状态";
 }

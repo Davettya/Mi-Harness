@@ -7,7 +7,7 @@ import inspect
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Annotated
+from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Header, Query, Request, Response, UploadFile
@@ -19,11 +19,40 @@ from pydantic import ValidationError
 from harness.core import ArtifactRef, ErrorEnvelope, HarnessError, canonical_json
 from harness.server.auth import AuthService
 from harness.server.schemas import (
-    AuthSessionView, BranchInput, CancelInput, ConfigInput, ConfigKind, ContextPinInput, InteractionResponse,
-    McpDiagnoseInput, MemoryPatch, MemoryReview, ModelTestInput, ModelDiscoveryInput, ModelSetupInput,
-    ModelSetupSaveInput, Page, PairingInput, PluginLoadInput,
-    ReconciliationInput, RunView, SessionInput, SessionPatch, SkillPatch, SkillRefreshInput,
-    SteeringInput, SubmitReceipt, SubmitRunInput, WorkspaceInput, ProjectInput, ProjectPatch,
+    AuthSessionView,
+    BranchInput,
+    CancelInput,
+    ConfigInput,
+    ConfigKind,
+    ContextPinInput,
+    InteractionResponse,
+    McpDiagnoseInput,
+    McpFileInput,
+    McpFileSaveInput,
+    MemoryPatch,
+    MemoryReview,
+    ModelDiscoveryInput,
+    ModelSelectionInput,
+    ModelSetupInput,
+    ModelSetupSaveInput,
+    ModelTestInput,
+    Page,
+    PairingInput,
+    PluginLoadInput,
+    PreferencesInput,
+    ProjectInput,
+    ProjectPatch,
+    ProjectRemoveInput,
+    ReconciliationInput,
+    RunView,
+    SessionInput,
+    SessionPatch,
+    SkillPatch,
+    SkillRefreshInput,
+    SteeringInput,
+    SubmitReceipt,
+    SubmitRunInput,
+    WorkspaceInput,
 )
 
 
@@ -70,7 +99,7 @@ def create_app(services: Any) -> FastAPI:
             if closer:
                 await resolve(closer())
 
-    app = FastAPI(title="Local Agent Harness", version="0.1.0", lifespan=lifespan, responses={
+    app = FastAPI(title="Mi Harness", version="0.1.0", lifespan=lifespan, responses={
         status: {"model": ErrorEnvelope} for status in (400, 401, 403, 404, 409, 410, 413, 422, 429, 503)
     })
     app.state.services, app.state.auth = services, auth
@@ -116,7 +145,12 @@ def create_app(services: Any) -> FastAPI:
             unsafe = request.method not in {"GET", "HEAD", "OPTIONS"}
             if unsafe and origin not in allowed_origins:
                 raise HarnessError("ORIGIN_REQUIRED", "写请求必须来自已授权的工作台来源", 403)
-            if request.url.path.startswith("/api/") and request.url.path not in {"/api/auth/exchange", "/api/mcp/oauth/callback", "/api/health"}:
+            if request.url.path.startswith("/api/") and request.url.path not in {
+                "/api/auth/exchange",
+                "/api/auth/local",
+                "/api/mcp/oauth/callback",
+                "/api/health",
+            }:
                 session = auth.authenticate(request.cookies.get("harness_session"))
                 request.state.owner_id = session["owner_id"]
                 if unsafe:
@@ -149,13 +183,79 @@ def create_app(services: Any) -> FastAPI:
         if not capabilities.get(name, False):
             raise HarnessError("FEATURE_NOT_ENABLED", "此功能在当前服务配置中未启用", 501)
 
+    @app.get("/api/agent-modes")
+    async def modes(request: Request) -> dict:
+        return dict(default="react", policy_version=1, items=[
+            dict(id="react", name="ReAct", description="在授权范围内完成任务"),
+            dict(id="plan", name="Plan", description="只读分析与计划；模式对本次运行固定")])
+
+    @app.get("/api/mcp-config/file")
+    async def mcp_file(request: Request) -> dict:
+        return services.mcp_file.view()
+
+    @app.post("/api/mcp-config/validate")
+    async def mcp_file_validate(body: McpFileInput, request: Request) -> dict:
+        profiles = services.mcp_file.validate(body.text)
+        return dict(valid=True, server_ids=list(profiles), connected=False)
+
+    @app.put("/api/mcp-config/file")
+    async def mcp_file_save(body: McpFileSaveInput, request: Request) -> dict:
+        feature("mcp_file_editing")
+        return await mutate(request, "save_mcp_file", body.model_dump())
+
+    @app.post("/api/mcp-config/reload")
+    async def mcp_file_reload(request: Request) -> dict:
+        return await mutate(request, "reload_mcp_file", {})
+
+    @app.post("/api/mcp/{server_id}/revoke")
+    async def mcp_revoke(server_id: str, request: Request) -> dict:
+        return await mutate(request, "revoke_mcp", {}, server_id=server_id)
+
+    @app.get("/api/models/available")
+    async def available_models(request: Request, session_id: str | None = None) -> dict:
+        return services.selection.available(owner(request), session_id)
+
+    @app.get("/api/sessions/{session_id}/preferences")
+    async def preferences(session_id: str, request: Request) -> dict:
+        return services.selection.preferences(owner(request), session_id)
+
+    @app.patch("/api/sessions/{session_id}/preferences")
+    async def save_preferences(session_id: str, body: PreferencesInput, request: Request) -> dict:
+        return await mutate(request, "save_preferences", body.model_dump(exclude_none=True), session_id=session_id)
+
+    @app.post("/api/runs/{run_id}/model-selection", status_code=202)
+    async def select_model(run_id: str, body: ModelSelectionInput, request: Request) -> dict:
+        return await mutate(request, "select_model", body.model_dump(exclude_none=True), run_id=run_id)
+
+    def set_session_cookies(request: Request, response: Response, session: str, csrf: str):
+        secure = request.url.scheme == "https"
+        response.set_cookie(
+            "harness_session",
+            session,
+            httponly=True,
+            secure=secure,
+            samesite="strict",
+            max_age=auth.session_ttl,
+        )
+        response.set_cookie(
+            "harness_csrf",
+            csrf,
+            httponly=False,
+            secure=secure,
+            samesite="strict",
+            max_age=auth.session_ttl,
+        )
+        response.headers["X-CSRF-Token"] = csrf
+
     @app.post("/api/auth/exchange", status_code=204)
     async def exchange(body: PairingInput, request: Request, response: Response):
-        session, csrf = auth.exchange(body.ticket, request.client.host if request.client else "local")
-        secure = request.url.scheme == "https"
-        response.set_cookie("harness_session", session, httponly=True, secure=secure, samesite="strict", max_age=auth.session_ttl)
-        response.set_cookie("harness_csrf", csrf, httponly=False, secure=secure, samesite="strict", max_age=auth.session_ttl)
-        response.headers["X-CSRF-Token"] = csrf
+        session, csrf = auth.exchange(body.ticket, request.client.host if request.client else "")
+        set_session_cookies(request, response, session, csrf)
+
+    @app.post("/api/auth/local", status_code=204)
+    async def local_exchange(request: Request, response: Response):
+        session, csrf = auth.exchange_local(request.client.host if request.client else "")
+        set_session_cookies(request, response, session, csrf)
 
     @app.get("/api/auth/session", response_model=AuthSessionView)
     async def auth_session(request: Request):
@@ -184,6 +284,10 @@ def create_app(services: Any) -> FastAPI:
     @app.patch("/api/projects/{project_id}")
     async def update_project(project_id: str, body: ProjectPatch, request: Request) -> dict:
         return await mutate(request, "update_project", body.model_dump(), project_id=project_id)
+
+    @app.delete("/api/projects/{project_id}")
+    async def remove_project(project_id: str, body: ProjectRemoveInput, request: Request) -> dict:
+        return await mutate(request, "remove_project", body.model_dump(), project_id=project_id)
 
     @app.post("/api/local/folder-picker")
     async def folder_picker(request: Request) -> dict:
@@ -303,6 +407,8 @@ def create_app(services: Any) -> FastAPI:
 
     @app.post("/api/artifacts", status_code=201, response_model=ArtifactRef)
     async def upload(request: Request, workspace_id: str = Form(...), file: UploadFile = File(...)):
+        if (file.content_type or "").startswith("image/"):
+            feature("inline_images")
         services.store.workspace(workspace_id, owner(request))
         key = request.headers.get("idempotency-key")
         if not key or len(key) > 200:
@@ -378,7 +484,18 @@ def create_app(services: Any) -> FastAPI:
     @app.post("/api/model-setup/test")
     async def test_model_setup(body: ModelSetupInput, request: Request) -> dict:
         check_model_setup_available()
-        return await resolve(services.model_setup.test(owner(request), model_setup_body(body)))
+        task = asyncio.create_task(resolve(services.model_setup.test(owner(request), model_setup_body(body))))
+        try:
+            while not task.done():
+                await asyncio.wait({task}, timeout=0.2)
+                if await request.is_disconnected():
+                    task.cancel()
+                    raise HarnessError("MODEL_SETUP_CANCELLED", "检测已中止", 409)
+            return await task
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     @app.post("/api/model-setup/save")
     async def save_model_setup(body: ModelSetupSaveInput, request: Request) -> dict:

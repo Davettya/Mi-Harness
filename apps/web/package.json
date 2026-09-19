@@ -1,12 +1,12 @@
 {
-  "name": "harness-workbench",
+  "name": "mi-harness-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
-    "test": "vitest run",
+    "test": "vitest run --pool=threads --maxWorkers=1 --minWorkers=1",
     "generate:api": "openapi-typescript ../../docs/generated/openapi.json -o src/api/generated/schema.ts && prettier --write src/api/generated/schema.ts",
     "format": "prettier --write src vite.config.ts"
   },

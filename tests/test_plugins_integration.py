@@ -16,12 +16,21 @@ async def test_plugin_agent_ports_snapshot_drain_restart_and_terminal_release(tm
     services, _, session = setup_services(tmp_path)
     record = services.dispatch("load_plugin", "local", body={"manifest": manifest(agent_templates=[
         {"id": "plugin-agent", "tools": ["request_input"]}])})
-    session = services.dispatch("create_session", "local", body={"workspace_id": session["workspace_id"],
-        "agent_spec_id": "plugin-agent", "title": "Plugin fixture"})
+    with pytest.raises(HarnessError) as error:
+        services.dispatch("create_session", "local", body={"workspace_id": session["workspace_id"], "agent_spec_id": "plugin-agent"})
+    assert error.value.code == "AGENT_READONLY"
+    # Seed a historical internal-template session/run to retain recovery coverage.
+    session = services.store.create_session(session["workspace_id"], "Historical plugin fixture", "plugin-agent")
+    def legacy_submit(text):
+        branch = services.store.branch(session["default_branch_id"])
+        snapshot = services.make_snapshot("local", session, {})
+        snapshot["agent_spec"] = services.store.get("config/agents", "plugin-agent")
+        snapshot["plugins"] = services.plugin_manager.snapshot_refs(agent_id="plugin-agent", mcp_servers=[], skills=[])
+        return services.scheduler.submit("local", session["id"], dict(branch_id=branch["id"], expected_branch_revision=branch["revision"], content_parts=[dict(type="text", text=text)]), snapshot)["run_id"]
     await services.open_runtime()
     worker = Worker(services)
     try:
-        run_id = submit(services, session, '/tool request_input {"prompt":"Continue?"}')
+        run_id = legacy_submit('/tool request_input {"prompt":"Continue?"}')
         run = await advance(worker, run_id, {"waiting_user", "failed"})
         assert run["status"] == "waiting_user", run
         snapshot = services.store.get("snapshots", run["snapshot_id"])
@@ -29,7 +38,7 @@ async def test_plugin_agent_ports_snapshot_drain_restart_and_terminal_release(tm
         interaction = services.store.interactions(run_id)[0]
         assert services.plugins.drain("fixture-plugin", "1.0.0")["status"] == "draining"
         with pytest.raises(HarnessError, match="停止接受"):
-            submit(services, session, "new task")
+            legacy_submit("new task")
         # A newer contribution is the default while the old run stays locked.
         services.dispatch("load_plugin", "local", body={"manifest": manifest("2.0.0", agent_templates=[
             {"id": "plugin-agent", "tools": []}])})

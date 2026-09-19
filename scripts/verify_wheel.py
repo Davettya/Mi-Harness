@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from zipfile import ZipFile
@@ -16,7 +17,8 @@ import httpx
 
 root = Path(__file__).resolve().parents[1]
 output = root / "docs/verification"
-wheel = next((root / "dist").glob("*.whl"))
+project = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))["project"]
+wheel = root / "dist" / f"{project['name'].replace('-', '_')}-{project['version']}-py3-none-any.whl"
 uv = root / ".venv/Scripts/uv.exe"
 flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 report = {
@@ -79,16 +81,15 @@ try:
     base = f"http://127.0.0.1:{port}"
     cli = [python, "-m", "harness.platform.cli", "--data-dir", data]
     try:
-        launched = json.loads(run([*cli, "serve", "--port", port, "--startup-timeout", 35]))
+        launched = json.loads(run([*cli, "serve", "--port", port, "--startup-timeout", 60]))
         assert launched["status"] == "ready", launched
         report["checks"]["installed_supervisor_api_worker"] = True
         with httpx.Client(base_url=base, trust_env=False, timeout=15) as client:
             page = client.get("/")
             assert page.status_code == 200 and "<html" in page.text
-            ticket = run([*cli, "pair"]).strip()
             assert (
                 client.post(
-                    "/api/auth/exchange", json={"ticket": ticket}, headers={"Origin": base}
+                    "/api/auth/local", headers={"Origin": base}
                 ).status_code
                 == 204
             )

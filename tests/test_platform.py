@@ -27,6 +27,21 @@ def free_port():
         return sock.getsockname()[1]
 
 
+def test_windows_double_click_launcher_delegates_without_duplicate_configuration():
+    root = Path(__file__).parents[1]
+    launcher = (root / "start-mi-harness.cmd").read_text(encoding="utf-8")
+    powershell = (root / "start-mi-harness.ps1").read_text(encoding="utf-8")
+
+    assert 'start-mi-harness.ps1"' in launcher
+    assert "-ExecutionPolicy Bypass" in launcher
+    assert 'exit /b %EXIT_CODE%' in launcher
+    assert "pause" in launcher
+    assert "mi-harness serve" not in launcher
+    assert "--port" not in launcher and "--data-dir" not in launcher
+    assert "serve --open" in powershell
+    assert powershell.isascii()
+
+
 def test_configuration_precedence_narrowing_and_secret_rejection(tmp_path):
     user, workspace = tmp_path / "user.json", tmp_path / "workspace.json"
     user.write_text(json.dumps({"port": 8768, "data_dir": "relative", "permissions": {"network": False}}))

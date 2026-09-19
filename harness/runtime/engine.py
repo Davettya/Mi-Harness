@@ -44,6 +44,22 @@ def as_dict(value):
     return vars(value)
 
 
+def model_tool_result(data: dict) -> dict:
+    """Project the durable tool ledger result to the fields the model can act on."""
+    projected = {}
+    for key, value in data.items():
+        if key in {"operation_id", "started_at", "completed_at"}:
+            continue
+        if key == "retryable" and data.get("status") == "succeeded":
+            continue
+        if value is None or value == "" or value == [] or value == {}:
+            continue
+        projected[key] = value
+    if data.get("status") != "succeeded" and "retryable" in data:
+        projected["retryable"] = bool(data["retryable"])
+    return projected
+
+
 def public_message(message):
     """UI projection excludes provider opaque fields and private reasoning blocks."""
     data = message.model_dump(mode="json")
@@ -52,6 +68,9 @@ def public_message(message):
         for key in ("id", "type", "content", "name", "tool_calls", "tool_call_id", "status", "usage_metadata")
         if key in data and data[key] is not None
     }
+    binding = message.response_metadata.get("harness_binding")
+    if binding:
+        projected["model_binding"] = binding
     if isinstance(projected.get("content"), list):
         projected["content"] = [
             block
@@ -93,6 +112,7 @@ class HarnessMiddleware(AgentMiddleware):
         self.host, self.ctx, self.spec = host, ctx, spec
         self.tools, self.system_prompt, self.skill_snapshots = tools, system_prompt, skill_snapshots
         self.last_view = None
+        self._serial_tool_lock = asyncio.Lock()
 
     async def abefore_agent(self, state, runtime):
         await self.host._boundary(self.ctx)
@@ -150,22 +170,64 @@ class HarnessMiddleware(AgentMiddleware):
             # appended messages before this node. A crash before here leaves input pending.
             await maybe(self.host.input_ack(self.ctx, request.state["steering_command_ids"]))
         schemas = [convert_to_openai_tool(tool) for tool in request.tools]
-        profile = self.host.model_gateway.get_profile(self.spec.model_policy.get("profile_ref", "demo@1"))
-        view = await self.host.context_service.compose(
-            self.ctx,
-            {"messages": request.messages},
-            profile,
-            schemas,
-            system_prompt=self.system_prompt,
-            skill_snapshots=self.skill_snapshots,
-        )
-        materialized = self.host.context_service.materialize(self.ctx, view)
+        selection = self.host.model_selection
+        binding = None
+        if selection:
+            logical_id = selection.logical_id(self.ctx, request.messages, request.state.get("model_steps", 0))
+            # Interrupt replay always occurs in its original order, before preparing a new candidate.
+            waits = self.host.repository.get("model_selection_waits", logical_id) or {"items": []}
+            for waiting in waits["items"]:
+                interrupt(waiting)
+            for preparation in range(8):
+                candidate = selection.candidate(self.ctx, logical_id)
+                previous = self.host.model_gateway.get_profile(selection.control(self.ctx.run_id)["effective_profile_ref"])
+                try:
+                    if candidate.get("input_view_id"):
+                        from harness.context.models import ContextView
+                        saved = self.host.repository.get("context_views", candidate["input_view_id"])
+                        if not saved or saved.get("run_id") != self.ctx.run_id:
+                            raise HarnessError("context_not_found", "Bound model input is missing", 409)
+                        view = ContextView.model_validate(saved["view"])
+                        model = await self.host.model_gateway.resolve(candidate["profile_ref"], self.ctx)
+                        binding = selection.bind(self.ctx, candidate, view)
+                        break
+                    async def rebuild(target):
+                        return await self.host.context_service.compose(
+                            self.ctx, {"messages": request.messages}, target, schemas,
+                            system_prompt=self.system_prompt, skill_snapshots=self.skill_snapshots)
+                    model, view = await self.host.model_gateway.switch(
+                        candidate["profile_ref"], self.ctx, request.messages, previous, rebuild)
+                    await self.host._fault("model_context_prepared", self.ctx)
+                    binding = selection.bind(self.ctx, candidate, view)
+                    if binding:
+                        break
+                except Exception as exc:
+                    # No silent fallback; preserve the graph and ask for explicit new selection.
+                    selection.reject(self.ctx, candidate, getattr(exc, "code", "MODEL_SELECTION_FAILED"))
+                    record = self.host.repository.prepare_interaction(
+                        self.ctx, "model-selection:" + logical_id + ":" + str(candidate["control_revision"]),
+                        "user_input", {"prompt": "模型切换无法应用。请选择兼容模型，然后确认继续。",
+                        "response_schema": {"type": "object", "properties": {"continue": {"const": True}}, "required": ["continue"]}}, None)
+                    payload = dict(kind="user", run_id=self.ctx.run_id, input_revision=self.ctx.input_revision, interaction_id=record["interaction_id"])
+                    if payload in waits["items"]:
+                        raise HarnessError("MODEL_SELECTION_REQUIRED", "请先选择兼容模型再继续", 409) from exc
+                    waits["items"].append(payload)
+                    self.host.repository.put("model_selection_waits", logical_id, waits)
+                    interrupt(payload)
+            else:
+                raise HarnessError("MODEL_SELECTION_BUSY", "模型选择过于频繁，请稍后继续", 429)
+            model = model.model_copy(update={"call_binding": {
+                k: binding[k] for k in ("logical_call_id", "control_revision", "profile_ref")}})
+            await self.host._fault("model_bound_before_dispatch", self.ctx)
+        else:
+            profile = self.host.model_gateway.get_profile(self.spec.model_policy.get("profile_ref", "demo@1"))
+            view = await self.host.context_service.compose(
+                self.ctx, {"messages": request.messages}, profile, schemas,
+                system_prompt=self.system_prompt, skill_snapshots=self.skill_snapshots)
+            model = request.model.model_copy(update={"execution_context": self.ctx})
+        materialized = self.host.context_service.materialize(self.ctx, view, binding=binding)
         self.last_view = view
-        settings = {
-            **request.model_settings,
-            "harness_output_reserve": view.budget_breakdown["output_reserve"],
-        }
-        model = request.model.model_copy(update={"execution_context": self.ctx})
+        settings = {**request.model_settings, "harness_output_reserve": view.budget_breakdown["output_reserve"]}
         response = await handler(
             request.override(
                 model=model,
@@ -190,8 +252,6 @@ class HarnessMiddleware(AgentMiddleware):
         }
 
     async def awrap_tool_call(self, request, handler):
-        await self.host._boundary(self.ctx)
-        await self.host._fault("model_checkpoint_before_tool", self.ctx)
         call = request.tool_call
         assistant = next(
             (
@@ -205,6 +265,20 @@ class HarnessMiddleware(AgentMiddleware):
             raise HarnessError(
                 "missing_tool_origin", "Tool request has no persisted assistant message identity"
             )
+        # The marker is stamped by the Gateway after full validation and is checkpointed
+        # with this assistant message, so hot selection/recovery cannot change its policy.
+        # Older checkpoints without a marker also take the conservative serial path.
+        binding = assistant.response_metadata.get("harness_binding", {})
+        if binding.get("tool_execution") != "parallel":
+            async with self._serial_tool_lock:
+                return await self._execute_tool_call(request, assistant)
+        return await self._execute_tool_call(request, assistant)
+
+    async def _execute_tool_call(self, request, assistant):
+        # Recheck fencing/cancellation after waiting for another tool execution.
+        await self.host._boundary(self.ctx)
+        await self.host._fault("model_checkpoint_before_tool", self.ctx)
+        call = request.tool_call
         if self.host.message_commit:
             await maybe(self.host.message_commit(self.ctx, assistant.id, "ai", public_message(assistant)))
         key = OperationKey(run_id=self.ctx.run_id, message_id=assistant.id, tool_call_id=call["id"])
@@ -247,7 +321,7 @@ class HarnessMiddleware(AgentMiddleware):
             "is_error", False
         )
         message = ToolMessage(
-            content=canonical_json(data),
+            content=canonical_json(model_tool_result(data)),
             tool_call_id=call["id"],
             name=call["name"],
             status="error" if failed else "success",
@@ -272,7 +346,8 @@ class HarnessMiddleware(AgentMiddleware):
 
 
 class LangChainAgentRuntime:
-    runtime_revision = "langchain-v1"
+    runtime_revision = "langchain-v2-selection"
+    supported_runtime_revisions = {"langchain-v1", "langchain-v2-selection"}
 
     def __init__(
         self,
@@ -292,6 +367,7 @@ class LangChainAgentRuntime:
         message_commit=None,
         input_loader=None,
         input_ack=None,
+        model_selection=None,
     ):
         if checkpointer is None or "memory" in type(checkpointer).__module__:
             raise ValueError("Runtime requires a persistent checkpointer")
@@ -310,6 +386,7 @@ class LangChainAgentRuntime:
         self.fault_hook = fault_hook
         self.message_commit = message_commit
         self.input_loader, self.input_ack = input_loader, input_ack
+        self.model_selection = model_selection
         self._contexts = {}
         self._cancelled: set[str] = set()
         self._graphs = {}
@@ -343,7 +420,7 @@ class LangChainAgentRuntime:
         if checkpoint:
             if (
                 checkpoint.graph_thread_key != ctx.graph_thread_key
-                or checkpoint.runtime_revision != self.runtime_revision
+                or checkpoint.runtime_revision not in self.supported_runtime_revisions
             ):
                 raise HarnessError("checkpoint_mismatch", "Checkpoint does not belong to this execution")
             config["configurable"].update(
@@ -392,7 +469,7 @@ class LangChainAgentRuntime:
             prompt = await maybe(self.prompt_loader(spec.system_prompt_ref))
         prompt = (
             prompt
-            or "You are a local Agent Harness assistant. Use only authorized tools. State evidence and uncertainty accurately."
+            or "You are Mi Harness, a local workspace assistant. Use only authorized tools. State evidence and uncertainty accurately."
         )
         if snapshot.get("project_roots"):
             import json
@@ -523,7 +600,7 @@ class LangChainAgentRuntime:
 
         source = CheckpointRef.model_validate(source_ref)
         if (
-            source.runtime_revision != self.runtime_revision
+            source.runtime_revision not in self.supported_runtime_revisions
             or target_graph_thread_key == source.graph_thread_key
         ):
             raise HarnessError("invalid_fork", "Checkpoint runtime or target thread is invalid")
@@ -579,7 +656,7 @@ class LangChainAgentRuntime:
             or state.get("harness_input_revision") != ctx.input_revision
         ):
             raise HarnessError("checkpoint_mismatch", "Checkpoint belongs to another run or input revision")
-        if state.get("harness_runtime_revision") != self.runtime_revision:
+        if state.get("harness_runtime_revision") not in self.supported_runtime_revisions:
             raise HarnessError(
                 "runtime_revision_mismatch", "Checkpoint requires an unsupported runtime state version"
             )

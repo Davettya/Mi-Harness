@@ -16,6 +16,7 @@ from harness.model_gateway import (
     validate_history,
 )
 from harness.runtime import AgentSpec, LangChainAgentRuntime
+from harness.runtime.engine import model_tool_result
 from harness.storage import Store
 
 
@@ -281,7 +282,7 @@ async def test_context_hard_limit_and_immutable_sources(tmp_path):
         )
     with pytest.raises(HarnessError, match="exceeding"):
         await composer.compose(
-            context(), [HumanMessage(content="汉" * 50000, id="large")], demo_profile(), []
+            context(), [HumanMessage(content="汉" * 120000, id="large")], demo_profile(), []
         )
 
 
@@ -357,7 +358,7 @@ async def test_production_summary_profile_and_pin_revision_are_in_context(tmp_pa
         {"revision": 1, "items": [{"id": "pin", "text": "Never delete source files", "source_ref": "user"}]},
     )
     composer = ContextService(
-        store, model_gateway=gateway, policy={"soft_threshold": 0.10, "recent_turns": 1}
+        store, model_gateway=gateway, policy={"soft_threshold": 0.01, "recent_turns": 1}
     )
     messages = [
         HumanMessage(content="old task " * 150, id="u1"),
@@ -372,6 +373,39 @@ async def test_production_summary_profile_and_pin_revision_are_in_context(tmp_pa
     assert summary["model_profile_ref"] == "demo@1"
     assert summary["constraints"] == ["Never delete source files"]
     assert composer.materialize(context(), view)["messages"][-1].content == "latest correction"
+
+
+def test_model_tool_result_projection_keeps_ledger_fields_out_of_agent_context():
+    durable = {
+        "operation_id": "operation",
+        "status": "succeeded",
+        "summary": "找到 1 条匹配；扫描完成",
+        "structured_data": {"matches": [{"path": "one.py", "line": 1}], "complete": True},
+        "content_blocks": [],
+        "artifact_refs": [],
+        "truncated": False,
+        "exit_code": None,
+        "started_at": "2026-09-19T00:00:00Z",
+        "completed_at": "2026-09-19T00:00:01Z",
+        "error_code": None,
+        "retryable": False,
+    }
+
+    assert model_tool_result(durable) == {
+        "status": "succeeded",
+        "summary": "找到 1 条匹配；扫描完成",
+        "structured_data": {"matches": [{"path": "one.py", "line": 1}], "complete": True},
+        "truncated": False,
+    }
+    assert durable["operation_id"] == "operation"
+
+    failed = {**durable, "status": "failed", "error_code": "FILE_NOT_FOUND"}
+    assert model_tool_result(failed)["retryable"] is False
+    assert model_tool_result(failed)["error_code"] == "FILE_NOT_FOUND"
+    assert model_tool_result({"status": "succeeded", "value": "business result"}) == {
+        "status": "succeeded",
+        "value": "business result",
+    }
 
 
 @pytest.mark.asyncio
@@ -410,11 +444,15 @@ async def test_pin_change_during_summary_does_not_activate_old_summary(tmp_path)
 async def test_attachment_resolution_reads_bounded_text_and_verified_images(tmp_path):
     import base64
     import hashlib
+    from io import BytesIO
+
+    from PIL import Image
 
     from harness.core import ArtifactRef
     from harness.model_gateway import Capability
-
-    payloads = {"text-file": ("真实附件内容。" * 100).encode(), "image-file": b"fixture image bytes"}
+    png = BytesIO()
+    Image.new("RGB", (24, 24), "red").save(png, format="PNG")
+    payloads = {"text-file": ("真实附件内容。" * 100).encode(), "image-file": png.getvalue()}
     reads = []
 
     def ref(identity, mime):

@@ -49,6 +49,40 @@ def provider_server():
                             "function": {"name": "echo", "arguments": '{"text":"fixture"}'},
                         }
                     ]
+                if self.path.startswith("/batch") and not tool_result:
+                    message["tool_calls"].append(
+                        {
+                            "id": "fixture-call-two",
+                            "type": "function",
+                            "function": {"name": "echo", "arguments": '{"text":"fixture-two"}'},
+                        }
+                    )
+                    if self.path.startswith("/batch-invalid"):
+                        message["tool_calls"][1]["function"]["arguments"] = '{"text":42}'
+                    if self.path.startswith("/batch-duplicate"):
+                        message["tool_calls"][1]["id"] = "fixture-call"
+                    if self.path.startswith("/batch-unknown"):
+                        message["tool_calls"][1]["function"]["name"] = "unbound-tool"
+                if self.path.startswith("/batch") and body.get("stream"):
+                    delta = {"role": "assistant", "content": message["content"] or ""}
+                    if message.get("tool_calls"):
+                        delta["tool_calls"] = [
+                            {"index": i, **call} for i, call in enumerate(message["tool_calls"])
+                        ]
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.end_headers()
+                    for piece, finish in ((delta, None), ({}, "stop" if tool_result else "tool_calls")):
+                        chunk = dict(
+                            id="fixture-response",
+                            object="chat.completion.chunk",
+                            created=1,
+                            model=body["model"],
+                            choices=[dict(index=0, delta=piece, finish_reason=finish)],
+                        )
+                        self.wfile.write(("data: " + json.dumps(chunk) + "\n\n").encode())
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    return
                 response = {
                     "id": "fixture-response",
                     "object": "chat.completion",
@@ -162,9 +196,13 @@ async def test_real_adapter_protocol_fixture_multi_round(provider_server, adapte
             }
         ]
     )
-    image_data = (
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6R8AAAAASUVORK5CYII="
-    )
+    from io import BytesIO
+    from PIL import Image
+    import base64
+
+    png = BytesIO()
+    Image.new("RGB", (8, 8), "blue").save(png, format="PNG")
+    image_data = base64.b64encode(png.getvalue()).decode()
     question = HumanMessage(
         content=[
             {"type": "text", "text": "Call echo with fixture"},

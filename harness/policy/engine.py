@@ -141,6 +141,9 @@ class PolicyEngine:
         current = self.for_agent(ctx, snapshot.get("agent_spec", {}).get("policy", "default"))
         frozen = snapshot.get("policy", current)
         capabilities = set(current["capabilities"]) & set(frozen.get("capabilities", []))
+        if snapshot.get("mode") == "plan":
+            from harness.runtime.modes import PLAN_CAPABILITIES
+            capabilities &= PLAN_CAPABILITIES
         agent = snapshot.get("agent_spec", {})
         if isinstance(agent.get("policy"), dict) and "capabilities" in agent["policy"]:
             capabilities &= set(agent["policy"]["capabilities"])
@@ -311,6 +314,8 @@ class PolicyEngine:
             raise HarnessError("SKILL_DENIED", "Skill 不在任务授权范围", 403)
 
     def authorize_mcp(self, profile, ctx: AccessContext, purpose: str) -> None:
+        if (self.store.get("mcp_revoked", profile.server_id) or {}).get("revoked"):
+            raise HarnessError("MCP_REVOKED", "MCP 服务授权已撤销", 403)
         if getattr(profile, "transport", None) != "stdio":
             self.endpoint(profile.endpoint, ctx, purpose="mcp", configured=True)
         elif not getattr(profile, "command", None):

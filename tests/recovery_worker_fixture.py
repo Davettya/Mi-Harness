@@ -27,6 +27,12 @@ async def main():
     services.gateway.fault_hook = crash
     await services.open()
     async with build_runtime(services):
+        if len(sys.argv) > 2 and sys.argv[2].startswith("model_"):
+            async def model_crash(stage, ctx):
+                if stage == sys.argv[2]:
+                    (data / "crash-marker").write_text(stage, encoding="utf-8")
+                    os._exit(24)
+            services.runtime.fault_hook = model_crash
         await Worker(services).run()
 
 

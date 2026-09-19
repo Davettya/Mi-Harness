@@ -10,11 +10,13 @@ from pathlib import Path
 
 from harness.core import HarnessError, canonical_json, utc_now
 from .store import SCHEMA_VERSION, Store
+from .filesystem import storage_path
 
 
 def backup(data_dir: Path, destination: Path, *, writers_stopped: bool) -> dict:
     if not writers_stopped:
         raise HarnessError("MAINTENANCE_REQUIRED", "备份前必须停止业务与 checkpoint 写入")
+    data_dir, destination = storage_path(data_dir), storage_path(destination)
     if destination.exists() and any(destination.iterdir()):
         raise HarnessError("DESTINATION_NOT_EMPTY", "备份目录必须为空")
     destination.mkdir(parents=True, exist_ok=True)
@@ -23,6 +25,8 @@ def backup(data_dir: Path, destination: Path, *, writers_stopped: bool) -> dict:
         if source.exists():
             with closing(sqlite3.connect(source)) as src, closing(sqlite3.connect(destination / name)) as dst:
                 src.backup(dst)
+    if (data_dir / "mcp.json").exists():
+        shutil.copy2(data_dir / "mcp.json", destination / "mcp.json")
     objects = data_dir / "artifacts"
     if objects.exists():
         shutil.copytree(
@@ -33,7 +37,7 @@ def backup(data_dir: Path, destination: Path, *, writers_stopped: bool) -> dict:
         shutil.copytree(snapshots, destination / "skill-snapshots", dirs_exist_ok=True)
     manifest = dict(
         schema_version=SCHEMA_VERSION,
-        application_version=version("local-agent-harness"),
+        application_version=version("mi-harness"),
         checkpoint_saver_version=version("langgraph-checkpoint-sqlite"),
         manifest_version=1,
         created_at=utc_now(),
@@ -52,6 +56,7 @@ def backup(data_dir: Path, destination: Path, *, writers_stopped: bool) -> dict:
 
 
 def restore(backup_dir: Path, destination: Path) -> dict:
+    backup_dir, destination = storage_path(backup_dir), storage_path(destination)
     if destination.exists() and any(destination.iterdir()):
         raise HarnessError("DESTINATION_NOT_EMPTY", "恢复必须写入新的空目录")
     manifest = json.loads((backup_dir / "manifest.json").read_text(encoding="utf-8"))

@@ -17,12 +17,18 @@ def with_vault(services, vault):
     services.mcp_continuations = McpContinuationService(services.store, vault)
 
 
+def save_mcp_fixture(services, profile):
+    value = {k: v for k, v in profile.model_dump(mode="json").items() if k not in {"server_id", "config_revision"}}
+    text = json.dumps({"schema_version": 1, "mcpServers": {profile.server_id: {**value, "enabled": True}}})
+    services.mcp_file.save(text, services.mcp_file.view()["hash"])
+
+
 @pytest.mark.asyncio
 async def test_legacy_profile_elicitation_flag_preserves_noninteractive_tools(tmp_path,http_endpoint):
     services, _, session = setup_services(tmp_path)
     profile = ConnectionProfile(server_id="fixture",display_name="Legacy fixture",transport="streamable_http",
         endpoint=str(http_endpoint),protocol_policy="legacy_only",allowed_capabilities=["tools","elicitation"])
-    services.store.put("config/mcp","fixture",profile.model_dump(mode="json"))
+    save_mcp_fixture(services, profile)
     catalog = await services.mcp.discover("fixture",services.diagnostic("local","mcp:fixture",session["workspace_id"]))
     services.store.put("mcp_catalogs",f"local:{session['workspace_id']}:fixture",catalog.model_dump(mode="json"))
     register_catalog(services.mcp,services.registry,catalog,trusted_effects={"add":"read"},continuations=services.mcp_continuations)
@@ -46,7 +52,7 @@ async def test_mp05_modern_mrtr_production_gateway_checkpoint_restart_and_pinned
     with_vault(services, vault)
     profile = ConnectionProfile(server_id="fixture", display_name="Durable fixture", transport="streamable_http",
         endpoint=str(http_endpoint), protocol_policy="modern_only", allowed_capabilities=["tools", "elicitation"])
-    services.store.put("config/mcp", "fixture", profile.model_dump(mode="json"))
+    save_mcp_fixture(services, profile)
     diagnostic = services.diagnostic("local", "mcp:fixture", session["workspace_id"])
     catalog = await services.mcp.discover("fixture", diagnostic)
     services.store.put("mcp_catalogs", f"local:{session['workspace_id']}:fixture", catalog.model_dump(mode="json"))

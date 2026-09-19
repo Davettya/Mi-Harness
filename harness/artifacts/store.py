@@ -8,11 +8,12 @@ from typing import BinaryIO, Iterable
 
 from harness.core import ArtifactRef, ExecutionContext, HarnessError, new_id, utc_now
 from harness.storage import Store
+from harness.storage.filesystem import storage_path
 
 
 class ArtifactStore:
     def __init__(self, store: Store, root: Path, max_bytes: int = 128 * 1024 * 1024):
-        self.store, self.root, self.max_bytes = store, Path(root), max_bytes
+        self.store, self.root, self.max_bytes = store, storage_path(root), max_bytes
         (self.root / "objects").mkdir(parents=True, exist_ok=True)
         (self.root / "tmp").mkdir(exist_ok=True)
 
@@ -53,11 +54,16 @@ class ArtifactStore:
                     size += len(chunk)
                     if size > self.max_bytes:
                         raise HarnessError("ARTIFACT_TOO_LARGE", "产物超过配置大小上限", 413)
+                    if mime.startswith("image/") and size > 10 * 1024 * 1024:
+                        raise HarnessError("IMAGE_TOO_LARGE", "图片超过 10 MiB 上限", 413)
                     digest.update(chunk)
                     output.write(chunk)
                 output.flush()
                 os.fsync(output.fileno())
             hashed = digest.hexdigest()
+            if mime.startswith("image/"):
+                from .images import validate_image
+                validate_image(temporary.read_bytes(), mime)
             key = f"objects/{domain}/{hashed[:2]}/{hashed}"
             target = self.root / key
             target.parent.mkdir(parents=True, exist_ok=True)

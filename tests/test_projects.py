@@ -1,11 +1,11 @@
 """Project compatibility, multi-folder boundaries and desktop connection regressions."""
-from urllib.parse import urlsplit, parse_qs
 import uuid
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
 
-from harness.core import HarnessError, OperationKey, RuntimeOutcome, CheckpointRef, InterruptRef, new_id
+from harness.core import CheckpointRef, HarnessError, InterruptRef, OperationKey, RuntimeOutcome, new_id
 from harness.platform.config import Settings
 from harness.server.app import create_app
 from harness.server.composition import Services
@@ -53,6 +53,110 @@ def test_legacy_project_and_multiple_sessions_survive_reopen(project_api):
     assert write(client, "PATCH", f"/api/projects/{old['id']}", {
         "name": "Stale", "roots": list(map(str, roots)), "expected_revision": 1,
     }).status_code == 409
+
+
+def test_session_archive_filter_remains_isolated_after_new_session(project_api):
+    _services, client, roots = project_api
+    project = write(client, "POST", "/api/projects", {"name": "Archive", "roots": [str(roots[0])] }).json()
+    archived = write(
+        client,
+        "POST",
+        "/api/sessions",
+        {"workspace_id": project["id"], "title": "Archived A"},
+    ).json()
+    assert write(
+        client,
+        "PATCH",
+        f"/api/sessions/{archived['id']}",
+        {"archived": True, "expected_revision": archived["revision"]},
+    ).status_code == 200
+
+    current = write(
+        client,
+        "POST",
+        "/api/sessions",
+        {"workspace_id": project["id"], "title": "Current C"},
+    ).json()
+    active_items = client.get(f"/api/sessions?workspace_id={project['id']}&archived=false").json()["items"]
+    archived_items = client.get(f"/api/sessions?workspace_id={project['id']}&archived=true").json()["items"]
+    assert [item["id"] for item in active_items] == [current["id"]]
+    assert [item["id"] for item in archived_items] == [archived["id"]]
+
+
+def test_remove_project_only_hides_harness_registration(project_api):
+    services, client, roots = project_api
+    marker = roots[0] / "source.txt"
+    marker.write_text("must remain", encoding="utf-8")
+    project = write(client, "POST", "/api/projects", {"name": "Detach", "roots": [str(roots[0])] }).json()
+    session = write(
+        client,
+        "POST",
+        "/api/sessions",
+        {"workspace_id": project["id"], "title": "History"},
+    ).json()
+    key = str(uuid.uuid4())
+    body = {"expected_revision": project["revision"]}
+    first = client.request(
+        "DELETE",
+        f"/api/projects/{project['id']}",
+        json=body,
+        headers={"Idempotency-Key": key},
+    )
+    replay = client.request(
+        "DELETE",
+        f"/api/projects/{project['id']}",
+        json=body,
+        headers={"Idempotency-Key": key},
+    )
+    assert first.status_code == replay.status_code == 200
+    assert first.json() == replay.json()
+    assert first.json()["removed"] is True
+    assert client.get("/api/projects").json()["items"] == []
+    assert marker.read_text(encoding="utf-8") == "must remain"
+    assert roots[0].is_dir()
+    assert services.store.workspace(project["id"])["removed_at"] == first.json()["removed_at"]
+    assert services.store.session(session["id"])["workspace_id"] == project["id"]
+    assert write(
+        client,
+        "POST",
+        "/api/sessions",
+        {"workspace_id": project["id"], "title": "Must fail"},
+    ).status_code == 404
+
+
+def test_remove_project_rejects_stale_revision_and_active_run(project_api):
+    services, client, roots = project_api
+    project = write(client, "POST", "/api/projects", {"name": "Busy", "roots": [str(roots[0])] }).json()
+    assert write(
+        client,
+        "DELETE",
+        f"/api/projects/{project['id']}",
+        {"expected_revision": project["revision"] + 1},
+    ).json()["code"] == "REVISION_CONFLICT"
+    session = services.dispatch(
+        "create_session",
+        "local",
+        body={"workspace_id": project["id"], "agent_spec_id": "default"},
+    )
+    branch = services.store.branch(session["default_branch_id"])
+    services.scheduler.submit(
+        "local",
+        session["id"],
+        {
+            "branch_id": branch["id"],
+            "expected_branch_revision": branch["revision"],
+            "content_parts": [{"type": "text", "text": "keep busy"}],
+        },
+    )
+    response = write(
+        client,
+        "DELETE",
+        f"/api/projects/{project['id']}",
+        {"expected_revision": project["revision"]},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "PROJECT_BUSY"
+    assert client.get("/api/projects").json()["items"][0]["id"] == project["id"]
 
 
 @pytest.mark.asyncio
@@ -106,6 +210,127 @@ async def test_secondary_folder_tools_and_project_boundary(project_api):
     result = await services.gateway.execute(resumed, key, "write_file", args)
     assert result.status == "succeeded"
     assert destination.read_text() == "second root write"
+
+
+@pytest.mark.asyncio
+async def test_search_prunes_excluded_trees_without_exposing_internal_stats(project_api, monkeypatch):
+    services, client, roots = project_api
+    project = write(client, "POST", "/api/projects", {"name": "Search", "roots": [str(roots[0])]}).json()
+    session = services.dispatch(
+        "create_session", "local", body={"workspace_id": project["id"], "agent_spec_id": "default"}
+    )
+    receipt = services.scheduler.submit(
+        "local",
+        session["id"],
+        {
+            "branch_id": session["default_branch_id"],
+            "expected_branch_revision": 1,
+            "content_parts": [{"type": "text", "text": "search"}],
+        },
+    )
+    ctx = services.scheduler.claim("search-test-worker")
+    assert ctx.run_id == receipt["run_id"]
+    root = roots[0]
+    needle = "def " + "tool_shell"
+    definition = needle + "(name: str, description: str, schema: dict) -> StructuredTool:"
+    for excluded in [".git", ".venv", "node_modules"]:
+        directory = root / excluded
+        directory.mkdir()
+        for index in range(12):
+            (directory / f"ignored-{index}.txt").write_text(needle + " ignored", encoding="utf-8")
+    target = root / "harness" / "runtime" / "engine.py"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "before\n" + definition + "\nafter\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("harness.tools.builtins.SEARCH_FILE_LIMIT", 3)
+
+    result = await services.builtin_tools.search(
+        ctx, {}, {"path": str(root), "pattern": needle}
+    )
+
+    data = result["structured_data"]
+    assert result["truncated"] is False
+    assert data["complete"] is True and data["stop_reason"] is None
+    assert set(data) == {"matches", "complete", "stop_reason"}
+    assert data["matches"] == [
+        {
+            "path": "harness\\runtime\\engine.py",
+            "line": 2,
+            "text": definition,
+            "text_truncated": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_limits_long_lines_and_line_reads_are_unambiguous(project_api, monkeypatch):
+    services, client, roots = project_api
+    project = write(client, "POST", "/api/projects", {"name": "Ranges", "roots": [str(roots[0])]}).json()
+    session = services.dispatch(
+        "create_session", "local", body={"workspace_id": project["id"], "agent_spec_id": "default"}
+    )
+    services.scheduler.submit(
+        "local",
+        session["id"],
+        {
+            "branch_id": session["default_branch_id"],
+            "expected_branch_revision": 1,
+            "content_parts": [{"type": "text", "text": "ranges"}],
+        },
+    )
+    ctx = services.scheduler.claim("range-test-worker")
+    root = roots[0]
+    exact = root / "exact"
+    exact.mkdir()
+    for name in ["a.txt", "b.txt"]:
+        (exact / name).write_text("needle\n", encoding="utf-8")
+    exact_result = await services.builtin_tools.search(
+        ctx, {}, {"path": str(exact), "pattern": "needle", "max_results": 2}
+    )
+    assert exact_result["structured_data"]["complete"] is True
+    assert exact_result["truncated"] is False
+
+    (exact / "c.txt").write_text("needle\n", encoding="utf-8")
+    limited = await services.builtin_tools.search(
+        ctx, {}, {"path": str(exact), "pattern": "needle", "max_results": 2}
+    )
+    assert limited["structured_data"]["complete"] is False
+    assert limited["structured_data"]["stop_reason"] == "result_limit"
+    assert limited["truncated"] is True
+
+    file_limited = root / "file-limited"
+    file_limited.mkdir()
+    for name in ["a.txt", "b.txt"]:
+        (file_limited / name).write_text("nothing\n", encoding="utf-8")
+    monkeypatch.setattr("harness.tools.builtins.SEARCH_FILE_LIMIT", 1)
+    incomplete = await services.builtin_tools.search(
+        ctx, {}, {"path": str(file_limited), "pattern": "absent"}
+    )
+    assert incomplete["structured_data"]["stop_reason"] == "file_limit"
+    assert set(incomplete["structured_data"]) == {"matches", "complete", "stop_reason"}
+
+    long_file = root / "long.txt"
+    long_file.write_text("prefix needle " + "x" * 1200 + "\nsecond\nthird\n", encoding="utf-8")
+    long_match = await services.builtin_tools.search(
+        ctx, {}, {"path": str(long_file), "pattern": "needle"}
+    )
+    assert long_match["structured_data"]["matches"][0]["text_truncated"] is True
+    lines = await services.builtin_tools.read_file(
+        ctx, {"id": "line-read"}, {"path": str(long_file), "start_line": 2, "line_count": 1}
+    )
+    assert lines["structured_data"]["mode"] == "lines"
+    assert lines["structured_data"]["content"] == "second\n"
+    assert lines["structured_data"]["start_line"] == 2
+    assert lines["structured_data"]["next_line"] == 3
+    assert lines["truncated"] is True
+    with pytest.raises(HarnessError, match="不能混用"):
+        await services.builtin_tools.read_file(
+            ctx,
+            {"id": "mixed-read"},
+            {"path": str(long_file), "offset": 0, "start_line": 1},
+        )
 
 
 def test_project_validation_picker_and_auth(project_api, monkeypatch):

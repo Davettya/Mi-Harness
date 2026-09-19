@@ -4,6 +4,7 @@ import hashlib
 import importlib.metadata
 import json
 import platform
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,8 +18,8 @@ files = sorted(
 hashes = {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
 evidence = {
     "timestamp": datetime.now(timezone.utc).isoformat(),
-    "source_revision": None,
-    "source_revision_note": "Workspace has no Git repository; SHA256 file manifest identifies tested sources",
+    "source_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip(),
+    "source_revision_note": "Working tree includes uncommitted changes; the file SHA256 manifest identifies the exact tested sources",
     "source_tree_sha256": hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(),
     "files": hashes,
     "os": platform.platform(),
@@ -36,6 +37,7 @@ evidence = {
             "mcp",
             "fastapi",
             "pydantic",
+            "pillow",
         )
     },
     "locks": {

@@ -1,5 +1,5 @@
-from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -46,7 +46,12 @@ class TestServices:
 def api(tmp_path):
     services = TestServices(tmp_path)
     app = create_app(services)
-    with TestClient(app, base_url="http://127.0.0.1:8767", raise_server_exceptions=False) as client:
+    with TestClient(
+        app,
+        base_url="http://127.0.0.1:8767",
+        raise_server_exceptions=False,
+        client=("127.0.0.1", 50000),
+    ) as client:
         yield client, app.state.auth, services
 
 
@@ -68,6 +73,58 @@ def test_pairing_single_use_expiry_cookie_and_logout(api):
     assert client.post("/api/auth/exchange", json={"ticket": ticket}).status_code == 401
     assert client.post("/api/auth/logout").status_code == 204
     assert client.get("/api/auth/session").status_code == 401
+
+
+def test_loopback_same_origin_pairing_is_silent_but_apis_remain_authenticated(api):
+    client, _, services = api
+    assert client.get("/api/workspaces").status_code == 401
+    denied = client.post(
+        "/api/auth/local",
+        headers={"Origin": "https://evil.invalid"},
+    )
+    assert denied.status_code == 403 and denied.json()["code"] == "ORIGIN_REJECTED"
+    response = client.post(
+        "/api/auth/local",
+        headers={"Origin": "http://127.0.0.1:8767"},
+    )
+    assert response.status_code == 204
+    assert client.cookies["harness_session"] and client.cookies["harness_csrf"]
+    assert "HttpOnly" in response.headers.get_list("set-cookie")[0]
+    assert all("SameSite=strict" in value for value in response.headers.get_list("set-cookie"))
+    session = client.get("/api/auth/session")
+    assert session.status_code == 200 and session.json()["owner_id"] == "local"
+    client.headers.update(
+        {
+            "Origin": "http://127.0.0.1:8767",
+            "X-CSRF-Token": client.cookies["harness_csrf"],
+            "Idempotency-Key": "automatic-session-command",
+        }
+    )
+    created = client.post(
+        "/api/workspaces",
+        json={"name": "automatic", "root_candidate": "C:/automatic"},
+    )
+    assert created.status_code == 201
+    sessions = services.store.list("auth_sessions")
+    assert len(sessions) == 1 and sessions[0]["source"] == "loopback_auto"
+
+
+def test_automatic_pairing_rejects_non_loopback_peer(tmp_path):
+    services = TestServices(tmp_path)
+    app = create_app(services)
+    with TestClient(
+        app,
+        base_url="http://127.0.0.1:8767",
+        raise_server_exceptions=False,
+        client=("192.0.2.20", 50000),
+    ) as client:
+        response = client.post(
+            "/api/auth/local",
+            headers={"Origin": "http://127.0.0.1:8767"},
+        )
+    assert response.status_code == 403
+    assert response.json()["code"] == "LOCAL_PAIRING_DENIED"
+    assert not services.store.list("auth_sessions")
 
 
 def test_origin_host_csrf_are_independent_guards(api):

@@ -6,6 +6,7 @@ import base64
 import inspect
 import json
 import time
+from contextvars import ContextVar
 
 from langchain_core.messages import (
     BaseMessage,
@@ -46,6 +47,7 @@ class ContextService:
         self.policy = ContextPolicy.model_validate(policy or {})
         self.model_gateway = model_gateway
         self.summary_profile_ref = summary_profile_ref
+        self._composing_profile = ContextVar("composing_profile", default=None)
         self.summary_engine = summary_engine
         self.artifact_writer = artifact_writer
         self.artifact_reader = artifact_reader
@@ -105,9 +107,9 @@ class ContextService:
                 raw = await _await(self.artifact_reader(ctx, ref, ref.size_bytes))
                 if len(raw) != ref.size_bytes:
                     raise HarnessError("attachment_incomplete", "Image content is incomplete")
-                parts.append(
-                    {"type": "image", "base64": base64.b64encode(raw).decode("ascii"), "mime_type": mime}
-                )
+                from harness.artifacts.images import validate_image
+                dimensions = validate_image(raw, mime)
+                parts.append({"type": "image", "artifact_ref": ref.model_dump(mode="json"), **dimensions})
             elif part.get("type") == "file_reference":
                 if not (
                     mime.startswith("text/")
@@ -154,6 +156,11 @@ class ContextService:
             return self.summary_profile_ref
         snapshot = self.repository.get("snapshots", ctx.config_snapshot_id) or {}
         selected = snapshot.get("agent_spec", {}).get("model_policy", {}).get("summary_profile_ref")
+        primary = snapshot.get("agent_spec", {}).get("model_policy", {}).get("profile_ref")
+        if selected and selected != primary:
+            return selected
+        if self._composing_profile.get():
+            return self._composing_profile.get()
         if selected:
             return selected
         profile = snapshot.get("model_profile", {})
@@ -207,7 +214,15 @@ class ContextService:
             messages.extend(messages_from_dict([data["message"]]))
         return messages
 
-    async def compose(
+    async def compose(self, execution_context, graph_state_ref, profile_ref, tool_catalog_ref=None, **kwargs):
+        ref = profile_ref.ref if isinstance(profile_ref, ModelProfile) else profile_ref
+        token = self._composing_profile.set(ref)
+        try:
+            return await self._compose(execution_context, graph_state_ref, profile_ref, tool_catalog_ref, **kwargs)
+        finally:
+            self._composing_profile.reset(token)
+
+    async def _compose(
         self,
         execution_context,
         graph_state_ref,
@@ -417,9 +432,14 @@ class ContextService:
         self.repository.put("context_views", view.input_view_id, snapshot)
         return view
 
-    def materialize(self, ctx, view: ContextView):
+    def materialize(self, ctx, view: ContextView, *, binding=None):
+        if binding:
+            saved_binding = self.repository.get("model_call_bindings", binding["logical_call_id"])
+            if (saved_binding != binding or binding["run_id"] != ctx.run_id
+                    or binding["input_view_id"] != view.input_view_id):
+                raise HarnessError("context_binding_mismatch", "Model input does not match its persisted binding", 409)
         pins = self.repository.get("context_pins", ctx.branch_id) or {"revision": 0}
-        if pins["revision"] != view.source_revision.pin_revision:
+        if not binding and pins["revision"] != view.source_revision.pin_revision:
             raise HarnessError(
                 "context_revision_conflict", "Pinned constraints changed after composing the model input"
             )
@@ -429,8 +449,20 @@ class ContextService:
         request = data["request"]
         if content_hash(request) != view.normalized_request_hash:
             raise HarnessError("context_corrupt", "Context request no longer matches its immutable hash")
+        messages = messages_from_dict(request["messages"])
+        for message in messages:
+            if isinstance(message.content, list):
+                hydrated = []
+                for part in message.content:
+                    if isinstance(part, dict) and part.get("type") == "image" and part.get("artifact_ref"):
+                        ref = ArtifactRef.model_validate(part["artifact_ref"])
+                        raw = self.artifact_reader(ctx, ref, ref.size_bytes)
+                        hydrated.append({"type": "image", "base64": base64.b64encode(raw).decode("ascii"), "mime_type": ref.mime_type})
+                    else:
+                        hydrated.append(part)
+                message.content = hydrated
         return {
-            "messages": messages_from_dict(request["messages"]),
+            "messages": messages,
             "system_message": SystemMessage(content=request["system"]) if request["system"] else None,
             "tools": request["tools"],
         }
@@ -513,6 +545,7 @@ class ContextService:
             profile_ref = self.summary_profile_ref or "injected-summary-engine"
         elif self._summary_profile(ctx) and self.model_gateway:
             handle = await self.model_gateway.resolve(self._summary_profile(ctx), ctx)
+            handle = handle.model_copy(update={"call_binding": {"purpose": "context_summary"}})
             summary_messages = []
             for message in messages:
                 message, _ = await self._attachments(ctx, message, handle.profile, summary=True)

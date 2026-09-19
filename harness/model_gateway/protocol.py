@@ -118,3 +118,12 @@ def check_model_switch(messages: list[BaseMessage], previous: ModelProfile, targ
         raise GatewayError(
             "nonportable_history", "Provider continuation state requires rebuilding standard history"
         )
+
+    if previous.ref != target.ref:
+        for message in messages:
+            opaque = {"signature", "thinking", "reasoning_content", "encrypted_content", "reasoning"}
+            if opaque.intersection(message.additional_kwargs) or (
+                isinstance(message.content, list) and any(isinstance(p, dict) and
+                (p.get("type") in {"thinking", "redacted_thinking", "reasoning"} or opaque.intersection(p))
+                for p in message.content)):
+                raise GatewayError("nonportable_history", "Opaque provider history cannot be transferred to a different model")

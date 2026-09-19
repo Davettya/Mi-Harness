@@ -9,7 +9,7 @@ from harness.server.app import create_app
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Local Harness API and Web process")
+    parser = argparse.ArgumentParser(description="Mi Harness API and Web process")
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--instance-id", required=True)
     parser.add_argument("--host", default="127.0.0.1")

@@ -163,6 +163,8 @@ export function runReducer(
       snapshotRevision: number(payload.revision),
       serverStatus: string(payload.status, state.serverStatus),
     };
+  if (eventType.startsWith("model.selection.") && payload.control_revision !== undefined)
+    next.snapshot = { ...state.snapshot, model_control: payload };
   if (eventType === "message.committed")
     next = {
       ...next,

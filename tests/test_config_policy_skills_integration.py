@@ -3,6 +3,7 @@ import pytest
 
 from harness.core import HarnessError, OperationKey
 from harness.policy.engine import DEFAULT_POLICY
+from harness.runtime.models import AgentSpec
 from test_integration import setup_services, submit
 
 
@@ -11,7 +12,7 @@ def test_named_policy_and_default_context_are_resolved_and_unknown_refs_rejected
     services.save_config("policies","reader",{**DEFAULT_POLICY,"expected_revision":None,
         "capabilities":["file_read"],"egress":"local_only"})
     agent = services.store.get("config/agents","default")
-    services.save_config("agents","default",{**agent,"expected_revision":agent["revision"],"policy":"reader"})
+    services.store.put("config/agents", "default", {**agent, "revision": agent["revision"] + 1, "policy": "reader"})
     run_id = submit(services,session,"read file")
     ctx = services.scheduler.claim("fixture")
     snapshot = services.store.get("snapshots",services.store.run(run_id)["snapshot_id"])
@@ -27,7 +28,7 @@ def test_named_policy_and_default_context_are_resolved_and_unknown_refs_rejected
     agent = services.store.get("config/agents","default")
     for field in ("policy","context_policy"):
         with pytest.raises(HarnessError) as error:
-            services.save_config("agents","bad-agent",{**agent,"expected_revision":None,field:"missing"})
+            services.validate_agent_policies(AgentSpec.model_validate({**agent, field: "missing"}))
         assert error.value.status==422
         assert services.store.get("config/agents","bad-agent") is None
 
@@ -38,7 +39,11 @@ async def test_skill_current_source_revocation_and_binary_resource_gateway_artif
     root = tmp_path / "skill-source"
     root.mkdir()
     (root / "SKILL.md").write_text("---\nname: picture\ndescription: fixture binary asset\n---\nRead assets only on request.",encoding="utf-8")
-    payload = b"\x89PNG\r\n\x1a\n\xff\x00\xfe binary fixture"
+    from io import BytesIO
+    from PIL import Image
+    png = BytesIO()
+    Image.new("RGB", (8, 8), "blue").save(png, format="PNG")
+    payload = png.getvalue()
     (root / "asset.png").write_bytes(payload)
     source = services.save_config("skill_sources","fixture",{"expected_revision":None,"root":str(root),"scope":"user","trusted":False,"enabled":True})
     services.dispatch("refresh_skills","local",body={"source_ids":["fixture"]})
@@ -47,7 +52,7 @@ async def test_skill_current_source_revocation_and_binary_resource_gateway_artif
     services.dispatch("refresh_skills","local",body={"source_ids":["fixture"]})
     skill = next(s for s in services.store.list("skills") if s["source_id"]=="fixture")
     agent = services.store.get("config/agents","default")
-    services.save_config("agents","default",{**agent,"expected_revision":agent["revision"],"skills":[skill["skill_id"]]})
+    services.store.put("config/agents", "default", {**agent, "revision": agent["revision"] + 1, "skills": [skill["skill_id"]]})
     run_id = submit(services,session,"read a skill asset")
     ctx = services.scheduler.claim("fixture")
     await services.prepare_run(ctx)

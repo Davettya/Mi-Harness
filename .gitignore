@@ -19,3 +19,8 @@ playwright-report/
 !.env.sample
 /%SystemDrive%/
 *.tsbuildinfo
+
+# Local-only documentation and verification evidence
+/docs/
+/IMPROVEMENT_GUIDE.md
+/AGENTS.md

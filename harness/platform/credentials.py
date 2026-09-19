@@ -11,6 +11,7 @@ SECRET_KEYS = re.compile(r"(authorization|api.?key|access.?token|refresh.?token|
 
 class CredentialVault:
     """OS-backed vault; plain credential values are never stored in business config."""
+    # Persistent namespace: keep existing Mi Harness credentials accessible after rebranding.
     def __init__(self, service: str = "local-agent-harness"):
         self.service = service
         self._redactions: set[str] = set()

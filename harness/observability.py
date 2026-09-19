@@ -44,6 +44,7 @@ class MetricsService:
                     "first_token_ms",
                     "span_id",
                     "parent_span_id",
+                    "phase", "status", "request_count",
                 }
                 item.update(
                     {

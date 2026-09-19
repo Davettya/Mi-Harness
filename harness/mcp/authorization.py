@@ -95,7 +95,7 @@ class OAuthAuthorizationService:
             registration = metadata.get("registration_endpoint")
             if not registration:
                 raise HarnessError("OAUTH_CLIENT_REGISTRATION", "服务需预先配置客户端或开放动态注册", 422)
-            client_metadata = OAuthClientMetadata(client_name="Local Agent Harness", redirect_uris=[self.callback_url],
+            client_metadata = OAuthClientMetadata(client_name="Mi Harness", redirect_uris=[self.callback_url],
                 grant_types=["authorization_code", "refresh_token"], response_types=["code"], token_endpoint_auth_method="none")
             registered = await self._request("POST", registration, context, expected=(200, 201), json=client_metadata.model_dump(mode="json", exclude_none=True))
             client_info = OAuthClientInformationFull.model_validate(registered.json())

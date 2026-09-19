@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ModelSettings } from "./ModelSettings";
+import { McpJsonSettings } from "./McpJsonSettings";
 import { api, ApiError, Command, type ConfigKind } from "../../api/client";
 import {
   id,
@@ -22,7 +23,6 @@ import {
 type SettingsTab = ConfigKind | "skills" | "plugins" | "diagnostics";
 const tabs: { id: SettingsTab; label: string; description: string }[] = [
   { id: "models", label: "模型", description: "连接并使用你的模型" },
-  { id: "agents", label: "Agent", description: "目标、工具与执行预算" },
   { id: "skills", label: "Skills", description: "可复用能力与固定版本" },
   {
     id: "skill_sources",
@@ -141,7 +141,7 @@ export function Settings({
     setError(null);
     setReceipt("");
     setConfirmSave(false);
-    if (tab === "models") {
+    if (tab === "models" || tab === "mcp") {
       setPending(false);
       return () => {
         active = false;
@@ -359,6 +359,8 @@ export function Settings({
         <main className="settings-content">
           {tab === "models" ? (
             <ModelSettings onChanged={onChanged} onBusyChange={setPending} />
+          ) : tab === "mcp" ? (
+            <McpJsonSettings onChanged={onChanged} />
           ) : (
             <>
               <div className="section-heading">
@@ -506,7 +508,7 @@ export function Settings({
                     >
                       审阅更改
                     </button>
-                    {tab === "mcp" && selected && (
+                    {String(tab) === "mcp" && selected && (
                       <>
                         <button
                           disabled={pending}
@@ -680,7 +682,7 @@ export function Settings({
                     </a>
                   )}
                   <pre>{pretty(report)}</pre>
-                  {tab === "mcp" && (
+                  {String(tab) === "mcp" && (
                     <p className="muted">
                       连接与目录检查不会执行工具。实际示例调用请返回工作台提交任务，以便记录审批和操作账本。
                     </p>

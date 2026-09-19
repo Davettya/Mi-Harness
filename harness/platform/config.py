@@ -10,6 +10,7 @@ from .credentials import assert_secret_refs
 
 
 def default_data_dir() -> Path:
+    # Stable on-disk identity; the Mi Harness display name does not migrate user data.
     return Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local" / "share")) / "LocalAgentHarness"
 
 
@@ -33,6 +34,11 @@ class PlatformConfig(BaseModel):
     model_profile_ref: str | None = None
     credential_ref: str | None = None
     permissions: Permissions = Field(default_factory=Permissions)
+    # Disable admission/UI independently; accepted controls still execute on capable workers.
+    hot_model_selection: bool = True
+    inline_images: bool = True
+    mcp_file_editing: bool = True
+    verification_reuse: bool = True
 
     @field_validator("credential_ref")
     @classmethod

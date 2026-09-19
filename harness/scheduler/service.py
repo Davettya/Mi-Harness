@@ -208,19 +208,47 @@ class Scheduler:
                 raise HarnessError("CONFIGURATION", "配置快照服务未连接", 503)
             snapshot = self.snapshot_factory(owner, session, request)
         agent = snapshot["agent_spec"]
-        if request.get("agent_spec_revision", agent.get("revision", 1)) != agent.get("revision", 1):
+        if request.get("agent_spec_revision") is not None and request["agent_spec_revision"] != agent.get("revision", 1):
             raise HarnessError("REVISION_CONFLICT", "Agent 模板已更新")
         budget = BudgetPolicy.model_validate(snapshot.get("budget") or agent.get("budget") or {})
         rid, sid, now = new_id(), snapshot.get("config_snapshot_id", new_id()), utc_now()
-        parts = request.get("content_parts", [])
+        parts = list(request.get("content_parts", []))
         text = "\n".join(p.get("text", "") for p in parts if p.get("type") == "text")
-        attachments = request.get("attachment_refs", [])
-        for ref in attachments:
+        from harness.core import ArtifactRef
+        inline = [p["artifact_ref"] for p in parts if p.get("artifact_ref")]
+        present = {r["artifact_id"] for r in inline}
+        for ref in request.get("attachment_refs", []):
+            if ref["artifact_id"] not in present:
+                parts.append(dict(type="image" if ref["mime_type"].startswith("image/") else "file_reference", artifact_ref=ref))
+                present.add(ref["artifact_id"])
+        all_refs = inline + request.get("attachment_refs", [])
+        attachments = list({ref["artifact_id"]: ref for ref in all_refs}.values())
+        for ref in all_refs:
             row = self.store.artifact(ref["artifact_id"], owner)
-            if row["workspace_id"] != session["workspace_id"]:
+            if row["workspace_id"] != session["workspace_id"] or self.artifacts.ref(row) != ArtifactRef.model_validate(ref):
                 raise HarnessError("ARTIFACT_SCOPE", "附件不属于当前工作区", 403)
             self.artifacts.path(ref["artifact_id"], owner)
+        from harness.model_gateway import ModelProfile
+        history = self.store.messages(branch_id)
+        has_image = any(p.get("type") == "image" for p in parts) or any(
+            p.get("type") == "image" for m in history for p in m.get("content_parts", []))
+        if has_image and not ModelProfile.model_validate(snapshot["model_profile"]).supports("vision"):
+            raise HarnessError("VISION_UNVERIFIED", "当前模型配置尚未完成图片能力验证；请在设置 → 模型中验证并保存，再选择新版本。这不代表模型不支持图片。", 422)
+        for part in parts:
+            if part.get("type") == "image":
+                from harness.artifacts.images import validate_image
+                ref = part["artifact_ref"]
+                validate_image(self.artifacts.read_range(ref["artifact_id"], owner, 0, ref["size_bytes"]), ref["mime_type"])
         with self.store.transaction():
+            confirmation = request.get("plan_confirmation")
+            if confirmation:
+                source = self.store.run(confirmation.get("plan_id", ""), owner)
+                plan = self.store.get("plans", source["id"])
+                if (source["branch_id"] != branch_id or source["status"] != "completed" or not plan
+                    or snapshot.get("mode") != "react" or confirmation.get("confirmed") is not True
+                    or confirmation.get("revision") != plan.get("revision") or confirmation.get("content_hash") != plan.get("content_hash")):
+                    raise HarnessError("PLAN_CONFIRMATION_STALE", "计划已变化或不属于当前分支，请重新核对", 409)
+                snapshot = {**snapshot, "plan_confirmation": confirmation}
             revision = self.store.advance_branch(branch_id, request["expected_branch_revision"])
             self.store.put("snapshots", sid, {**snapshot, "config_snapshot_id": sid})
             run = self.store.insert_run(
@@ -631,6 +659,11 @@ class Scheduler:
             snapshot = dict(self.store.get("snapshots", ctx.config_snapshot_id))
             sid = new_id()
             snapshot["config_snapshot_id"] = sid
+            control = self.store.get("run_model_controls", ctx.run_id)
+            if control:
+                ref = control["effective_profile_ref"]
+                snapshot["agent_spec"] = {**snapshot["agent_spec"], "model_policy": {**snapshot["agent_spec"]["model_policy"], "profile_ref": ref}}
+                snapshot["model_profile"] = self.store.get("model_profiles", ref)
             snapshot["policy"] = {**snapshot["policy"], "capabilities": sorted(requested)}
             self.store.put("snapshots", sid, snapshot)
             branch = self.store.add_branch(parent["session_id"], None)

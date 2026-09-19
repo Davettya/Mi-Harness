@@ -8,6 +8,20 @@ from test_integration import setup_services, submit
 from harness.storage import Store
 
 
+def test_control_schema_migration_preserves_records_and_rejects_old_worker(tmp_path, monkeypatch):
+    import harness.storage.store as module
+    path = tmp_path / "old.db"
+    monkeypatch.setattr(module, "SCHEMA_VERSION", 1)
+    old = Store(path)
+    old.put("snapshots", "historical", {"mode": "legacy", "immutable": True})
+    monkeypatch.setattr(module, "SCHEMA_VERSION", 2)
+    upgraded = Store(path)
+    assert upgraded.get("snapshots", "historical") == {"mode": "legacy", "immutable": True}
+    monkeypatch.setattr(module, "SCHEMA_VERSION", 1)
+    with pytest.raises(HarnessError, match="数据格式"):
+        Store(path)
+
+
 def test_future_schema_rejected_without_changing_database(tmp_path):
     path = tmp_path / "future.db"
     with sqlite3.connect(path) as connection:

@@ -15,7 +15,7 @@ import {
   SafeText,
 } from "../../components/common";
 
-function SchemaFields({
+export function SchemaFields({
   schema,
   value,
   onChange,
@@ -37,6 +37,7 @@ function SchemaFields({
     confirm_completed: "确认已经完成",
     confirm_not_executed: "确认尚未执行",
     accept_unresolved: "接受结果仍未确定",
+    continue: "确认继续",
   };
   if (!fields.length)
     return (
@@ -56,6 +57,9 @@ function SchemaFields({
       {fields.map(([name, definition]) => {
         const field = object(definition);
         const choices = array(field.enum);
+        const constant = field.const;
+        const booleanField =
+          field.type === "boolean" || typeof constant === "boolean";
         const update = (next: unknown) => onChange({ ...value, [name]: next });
         return (
           <label key={name}>
@@ -75,7 +79,7 @@ function SchemaFields({
                   </option>
                 ))}
               </select>
-            ) : field.type === "boolean" ? (
+            ) : booleanField ? (
               <select
                 disabled={disabled}
                 value={value[name] === undefined ? "" : String(value[name])}
@@ -83,8 +87,12 @@ function SchemaFields({
                 onChange={(event) => update(event.target.value === "true")}
               >
                 <option value="">请选择</option>
-                <option value="true">是</option>
-                <option value="false">否</option>
+                {(constant === undefined || constant === true) && (
+                  <option value="true">是</option>
+                )}
+                {(constant === undefined || constant === false) && (
+                  <option value="false">否</option>
+                )}
               </select>
             ) : (
               <input

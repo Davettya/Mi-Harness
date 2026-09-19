@@ -3,21 +3,38 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "local-agent-harness"
+name = "mi-harness"
 version = "0.1.0"
-description = "A local-first, recoverable LangChain Agent Harness"
+description = "Mi Harness - a local-first, recoverable AI workspace"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-  "fastapi>=0.115", "uvicorn>=0.34", "pydantic>=2.10", "httpx>=0.28",
-  "langchain>=1.0", "langgraph>=1.0", "langgraph-checkpoint-sqlite>=3.0",
-  "langchain-openai>=1.0", "langchain-anthropic>=1.0", "langchain-ollama>=1.0",
-  "mcp==2.2.0", "aiosqlite>=0.21", "jsonschema>=4.23",
-  "PyYAML>=6.0", "keyring>=25.0", "psutil>=7.0", "python-multipart>=0.0.20",
-  "portalocker>=3.1", "packaging>=24.0", "typer>=0.15", "urllib3>=2.0",
-  "pywin32>=311; sys_platform == 'win32'"
+  "fastapi>=0.115",
+  "uvicorn>=0.34",
+  "pydantic>=2.10",
+  "httpx>=0.28",
+  "langchain>=1.0",
+  "langgraph>=1.0",
+  "langgraph-checkpoint-sqlite>=3.0",
+  "langchain-openai>=1.0",
+  "langchain-anthropic>=1.0",
+  "langchain-ollama>=1.0",
+  "mcp==2.2.0",
+  "aiosqlite>=0.21",
+  "jsonschema>=4.23",
+  "PyYAML>=6.0",
+  "keyring>=25.0",
+  "psutil>=7.0",
+  "python-multipart>=0.0.20",
+  "portalocker>=3.1",
+  "packaging>=24.0",
+  "typer>=0.15",
+  "urllib3>=2.0",
+  "pywin32>=311; sys_platform == 'win32'",
+  "pillow>=11.3,<13",
 ]
 
 [project.scripts]
+mi-harness = "harness.platform.cli:main"
 harness = "harness.platform.cli:main"
 
 [dependency-groups]

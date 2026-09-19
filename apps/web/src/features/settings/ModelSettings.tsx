@@ -17,11 +17,14 @@ import {
 import { ErrorNotice, Notice, safeExternalUrl } from "../../components/common";
 import {
   canReuseModelKey,
+  configuredContextWindow,
   editModelDraft,
   emptyModelDraft,
   mergeModelChoices,
   modelDraftError,
   modelSetupBody,
+  modelVerificationState,
+  modelCheckLabel,
   switchModelProvider,
   type ModelDraft,
 } from "./model-setup-state";
@@ -47,6 +50,8 @@ export function ModelSettings({
   const [discoveryNote, setDiscoveryNote] = useState("");
   const [test, setTest] = useState<ModelConnectionTest | null>(null);
   const [receipt, setReceipt] = useState("");
+  const [acceptLimited, setAcceptLimited] = useState(false);
+  const verification = modelVerificationState(test);
   const [conflict, setConflict] = useState<ObjectValue | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const actionController = useRef<AbortController | null>(null);
@@ -102,6 +107,7 @@ export function ModelSettings({
   function clearResult() {
     setError(null);
     setTest(null);
+    setAcceptLimited(false);
     setReceipt("");
     setConflict(null);
   }
@@ -139,6 +145,7 @@ export function ModelSettings({
         : {}),
     }));
     setTest(null);
+    setAcceptLimited(false);
     setError(null);
     setReceipt("");
     if ("apiKey" in next || "baseUrl" in next) {
@@ -161,7 +168,14 @@ export function ModelSettings({
       ),
     );
   }
-  async function act(action: "discover" | "test" | "save") {
+  async function act(
+    action: "discover" | "test" | "save",
+    options: {
+      activate?: boolean;
+      probe_mode?: "agent" | "connectivity";
+      optional_checks?: ("vision" | "streaming")[];
+    } = {},
+  ) {
     const invalid = modelDraftError(draft, provider, action !== "discover");
     if (invalid) {
       setError(new Error(invalid));
@@ -170,6 +184,7 @@ export function ModelSettings({
     setPending(action);
     setError(null);
     setReceipt("");
+
     const controller = new AbortController();
     actionController.current = controller;
     try {
@@ -186,23 +201,58 @@ export function ModelSettings({
             : `已获取 ${result.items.length} 个模型。目录中没有的模型可直接输入名称。`,
         );
       } else if (action === "test") {
+        setTest(null);
+        setAcceptLimited(false);
         const result = await api.testModelSetup(
-          modelSetupBody(draft),
+          { ...modelSetupBody(draft), ...options, refresh_verification: true },
           controller.signal,
         );
-        if (mounted.current)
-          setTest({
-            connected: result.connected,
-            tool_calling: result.tool_calling,
-          });
+        if (mounted.current) setTest(result);
       } else {
+        let verified = test;
+        if (
+          options.activate !== false &&
+          !modelVerificationState(verified).ready
+        ) {
+          setAcceptLimited(false);
+          verified = await api.testModelSetup(
+            { ...modelSetupBody(draft), refresh_verification: true },
+            controller.signal,
+          );
+          if (!mounted.current) return;
+          setTest(verified);
+        }
+        const state = modelVerificationState(verified);
+        if (
+          options.activate !== false &&
+          (!state.ready || (state.limited && !acceptLimited))
+        ) {
+          setError(
+            new Error(
+              state.ready
+                ? "部分能力未通过，尚未保存。可以重新检测，或选择下方的“仅启用已验证能力”。"
+                : "尚未通过文本与工具协议验证，无法保存并使用。",
+            ),
+          );
+          return;
+        }
         const result = await api.saveModelSetup(
-          modelSetupBody(draft, true, true),
+          {
+            ...modelSetupBody(draft, true, true),
+            verification_token:
+              options.activate === false
+                ? undefined
+                : verified?.verification_token,
+            accept_unverified_capabilities:
+              state.limited && acceptLimited ? state.missing : [],
+            ...options,
+          },
           controller.signal,
         );
         if (!mounted.current) return;
         setDraft(emptyModelDraft());
         setTest(null);
+        setAcceptLimited(false);
         setDiscovered([]);
         setDiscoveryNote("");
         setConflict(null);
@@ -210,9 +260,11 @@ export function ModelSettings({
           ...previous.filter((profile) => id(profile) !== result.id),
           { ...result.profile, id: result.id },
         ]);
-        setActiveRef(`${result.id}@${result.revision}`);
+        if (result.active) setActiveRef(`${result.id}@${result.revision}`);
         setReceipt(
-          "模型已保存并使用。后续新任务将使用此模型，正在运行的任务保持原有配置。",
+          result.active
+            ? "模型已保存并使用；现有会话的明确选择保持不变。"
+            : "已保存未验证草稿；验证通过前不能用于任务。",
         );
         onChanged();
         try {
@@ -314,6 +366,7 @@ export function ModelSettings({
                   <small>
                     {providerName}
                     {profile.adapter_id === "demo" ? " · 确定性演示" : ""}
+                    {` · ${configuredContextWindow(profile) === 1000000 ? "1M" : "300K"} 上下文`}
                   </small>
                 </span>
                 {active ? (
@@ -434,7 +487,11 @@ export function ModelSettings({
               disabled={busy || !provider}
               onClick={() => void act("test")}
             >
-              {pending === "test" ? "正在测试…" : "测试连接"}
+              {pending === "test"
+                ? "正在验证…"
+                : test
+                  ? "重新验证全部能力"
+                  : "验证模型能力（含图片）"}
             </button>
           </div>
           {draft.providerId !== "ollama" && (
@@ -482,29 +539,90 @@ export function ModelSettings({
               "可从目录选择，也可输入提供方支持的自定义模型 ID。"}
           </small>
         </div>
+        <div className="model-field">
+          <label htmlFor="model-context-window">上下文窗口</label>
+          <select
+            id="model-context-window"
+            value={draft.contextWindow}
+            disabled={busy || !provider}
+            onChange={(event) =>
+              changeConnection({
+                contextWindow:
+                  event.target.value === "1000000" ? 1000000 : 300000,
+              })
+            }
+          >
+            <option value={300000}>300K（默认）</option>
+            <option value={1000000}>1M（模型明确支持时开启）</option>
+          </select>
+          <small>
+            所有模型默认使用 300K。只有提供方文档明确说明当前模型支持 1M
+            时才开启；能力验证不会发送百万 token 探测。
+          </small>
+        </div>
         {test && (
           <div
-            className={`model-test-result ${test.connected && test.tool_calling ? "success" : "failure"}`}
+            className={`model-test-result ${verification.ready && !verification.limited ? "success" : "failure"}`}
             role="status"
           >
-            <span aria-hidden="true">
-              {test.connected && test.tool_calling ? "✓" : "!"}
-            </span>
             <div>
               <strong>
-                {test.connected
-                  ? test.tool_calling
-                    ? "连接与工具调用验证通过"
-                    : "连接成功，工具调用验证未通过"
-                  : "连接未通过"}
+                {test.probe_mode === "connectivity"
+                  ? "快速连接检测结果（不能代替完整验证）"
+                  : verification.ready
+                    ? verification.limited
+                      ? "基础能力通过，部分能力待验证"
+                      : "模型完整验证通过"
+                    : "基础能力验证未通过"}
               </strong>
+              <ul>
+                {(
+                  [
+                    ["transport", "连接"],
+                    ["text", "文本"],
+                    ["tool_calling", "工具调用"],
+                    ["tool_pairing", "工具结果续接"],
+                    ["vision", "图片"],
+                    ["streaming", "流式输出"],
+                    ["usage", "用量统计"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <li key={key}>
+                    {label}：{modelCheckLabel(test, key)}
+                  </li>
+                ))}
+              </ul>
               <p>
-                {test.connected && test.tool_calling
-                  ? "此结果对应当前连接设置。保存时会再次验证。"
-                  : "请检查 API Key、模型名称和服务状态，或尝试其他模型。"}
+                {test.reused
+                  ? "复用已有结果"
+                  : `本次 ${test.request_count ?? 0} 次请求`}
+                ； 实测 {((test.duration_ms ?? 0) / 1000).toFixed(1)} 秒。
+                {test.probe_mode === "connectivity"
+                  ? "保存时仍需执行完整验证。"
+                  : "点击重新验证会重新检测；保存可复用 10 分钟内的匹配结果。"}
               </p>
+              {verification.limited && (
+                <p>
+                  未通过不等于模型不支持；可能是网络、超时或响应不符合要求。未验证能力不会启用，原配置在保存前保持不变。
+                </p>
+              )}
             </div>
           </div>
+        )}
+        {verification.limited && (
+          <label className="model-limited-choice">
+            <input
+              type="checkbox"
+              checked={acceptLimited}
+              disabled={busy}
+              onChange={(event) => setAcceptLimited(event.target.checked)}
+            />
+            仅启用已验证能力（不启用
+            {verification.missing
+              .map((name) => (name === "vision" ? "图片" : "流式输出"))
+              .join("、")}
+            ；编辑时将替换旧版本的能力配置）
+          </label>
         )}
         <ErrorNotice error={error} />
         {conflict && (
@@ -523,8 +641,34 @@ export function ModelSettings({
             </button>
           </div>
         )}
+        <div className="model-extra-actions">
+          <button
+            type="button"
+            disabled={busy || !provider}
+            onClick={() => void act("test", { probe_mode: "connectivity" })}
+          >
+            快速连接检测
+          </button>
+          <button
+            type="button"
+            disabled={busy || !provider}
+            onClick={() => void act("save", { activate: false })}
+          >
+            仅保存未验证草稿
+          </button>
+          {pending && pending !== "save" && (
+            <button
+              type="button"
+              onClick={() => actionController.current?.abort()}
+            >
+              中止检测
+            </button>
+          )}
+        </div>
         <footer className="model-setup-footer">
-          <p>保存并使用后，后续新任务默认使用此模型。</p>
+          <p>
+            完整验证包含文本、工具、图片和流式输出；仅通过的能力会启用。保存后，请在已有会话的模型菜单中选择新版本。
+          </p>
           <div>
             <button type="button" disabled={busy} onClick={newModel}>
               取消
@@ -534,7 +678,13 @@ export function ModelSettings({
               type="submit"
               disabled={busy || !provider}
             >
-              {pending === "save" ? "正在验证并保存…" : "保存并使用"}
+              {pending === "save"
+                ? verification.ready
+                  ? "正在本地保存…"
+                  : "正在验证并保存…"
+                : verification.limited
+                  ? "保存已验证能力"
+                  : "保存并使用"}
             </button>
           </div>
         </footer>

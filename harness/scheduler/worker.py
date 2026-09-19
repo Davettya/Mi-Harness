@@ -64,8 +64,11 @@ async def build_runtime(services):
             snapshot = services.store.get("snapshots", ctx.config_snapshot_id) or {}
             frozen = {item.get("id", item.get("name")): item for item in snapshot.get("tools", [])}
             tools = []
+            from harness.runtime.modes import permitted
             for name in frozen:
                 item = frozen.get(name)
+                if not permitted(snapshot.get("mode", "react"), item, snapshot):
+                    continue
                 if item:
                     tool, _ = services.registry.get(name, str(item.get("version", "1")))
                     if tool.input_schema != item.get("input_schema", tool.input_schema):
@@ -84,6 +87,7 @@ async def build_runtime(services):
                 else content
             )
             projected = {"message_id": identity, "role": role, "content_parts": parts}
+            projected.update(payload.get("model_binding", {}))
             services.store.add_message(ctx.run_id, identity, role, projected)
 
         def event_sink(ctx, kind, data):
@@ -107,6 +111,7 @@ async def build_runtime(services):
             event_sink=event_sink,
             input_loader=lambda ctx: services.store.pending_input_commands(ctx.run_id),
             input_ack=services.store.ack_input_commands,
+            model_selection=services.selection,
         )
         services.runtime = runtime
 
@@ -323,7 +328,7 @@ async def serve(data_dir: Path, instance_id: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Local Agent Harness worker")
+    parser = argparse.ArgumentParser(description="Mi Harness worker")
     parser.add_argument("--data-dir", required=True, type=Path)
     parser.add_argument("--instance-id", required=True)
     args = parser.parse_args()

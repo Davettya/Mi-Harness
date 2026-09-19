@@ -70,6 +70,43 @@ def model_server():
             names = [tool["function"]["name"] for tool in body.get("tools", [])]
             tool_name = "fixture_lookup" if "fixture_lookup" in names else "list_files"
             message = {"role": "assistant", "content": None if tool_call else "READY"}
+            content = body["messages"][-1].get("content")
+            if isinstance(content, list):
+                import base64
+                from io import BytesIO
+
+                from PIL import Image
+
+                image = next((p for p in content if p.get("type") == "image_url"), None)
+                if image and not self.path.startswith("/blind"):
+                    raw = base64.b64decode(image["image_url"]["url"].split(",", 1)[1])
+                    with Image.open(BytesIO(raw)) as fixture:
+                        color = fixture.getpixel((0, 0))
+                    message["content"] = {
+                        (255, 0, 0): "red",
+                        (0, 0, 255): "blue",
+                        (0, 128, 0): "green",
+                        (255, 255, 0): "yellow",
+                    }[color]
+            if body.get("stream") and self.path.startswith("/nostream"):
+                self.send_response(400)
+                self.end_headers()
+                return
+            if body.get("stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for delta, finish in (({"role": "assistant", "content": "READY"}, None), ({}, "stop")):
+                    event = dict(
+                        id="fixture-stream",
+                        object="chat.completion.chunk",
+                        created=1,
+                        model="fixture-model",
+                        choices=[dict(index=0, delta=delta, finish_reason=finish)],
+                    )
+                    self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
             if tool_call:
                 message["tool_calls"] = [
                     {
@@ -129,29 +166,56 @@ async def test_setup_probe_save_revision_credentials_and_default_context(service
     url, calls = model_server
     body = {
         "provider_id": "custom",
-        "base_url": url + "/v1",
+        "base_url": url + "/nostream",
         "api_key": "canary-secret-one",
         "model_id": "fixture-model",
     }
     setup = services.model_setup
     assert (await setup.discover("local", body))["items"][0]["id"] == "fixture-model"
-    assert (await setup.test("local", body))["tool_calling"]
+    tested = await setup.test("local", body)
+    assert tested["tool_calling"]
     assert services.vault.values == {}
     assert len(services.store.list("model_profiles")) == 1
-    saved = await setup.save("local", body)
+    saved = await setup.save(
+        "local",
+        {
+            **body,
+            "verification_token": tested["verification_token"],
+            "accept_unverified_capabilities": ["streaming"],
+        },
+    )
     profile = ModelProfile.model_validate(saved["profile"])
-    assert profile.supports("text") and profile.supports("tool_calling") and not profile.supports("vision")
+    assert profile.supports("text") and profile.supports("tool_calling") and profile.supports("vision")
+    assert profile.limits.context_window == 300_000
+    assert profile.limits.input_limit is None
+    assert profile.limits.source_ref == "app:default-model-context-window-300k-v1"
     assert services.store.get("config/agents", "default")["model_policy"]["profile_ref"] == profile.ref
     assert services.vault.get(profile.credential_ref, "model-" + profile.profile_id) == body["api_key"]
     ctx = services.diagnostic("local", profile.ref)
     services.check_model_policy(ctx, profile)  # precise grant permits only this model under network=false
     with pytest.raises(HarnessError, match="网络"):
         services.policy.endpoint(profile.endpoint_ref, ctx, purpose="mcp", configured=True)
+    edit = {
+        **body,
+        "api_key": "canary-secret-two",
+        "profile_id": profile.profile_id,
+        "expected_revision": 1,
+        "context_window": 1_000_000,
+    }
+    tested = await setup.test("local", edit)
     updated = await setup.save(
         "local",
-        {**body, "api_key": "canary-secret-two", "profile_id": profile.profile_id, "expected_revision": 1},
+        {
+            **edit,
+            "verification_token": tested["verification_token"],
+            "accept_unverified_capabilities": ["streaming"],
+        },
     )
     assert updated["revision"] == 2
+    updated_profile = ModelProfile.model_validate(updated["profile"])
+    assert updated_profile.limits.context_window == 1_000_000
+    assert updated_profile.limits.input_limit is None
+    assert updated_profile.limits.source_ref == "user-configured:model-context-window-1m-v1"
     assert services.models.get_profile(profile.ref).credential_ref == profile.credential_ref
     assert len(services.vault.values) == 2
     assert "canary-secret" not in json.dumps(
@@ -181,6 +245,7 @@ async def test_setup_probe_save_revision_credentials_and_default_context(service
     execution = services.scheduler.claim("fixture-worker")
     snapshot = services.store.get("snapshots", execution.config_snapshot_id)
     assert snapshot["model_profile"]["revision"] == 2
+    assert snapshot["model_profile"]["limits"]["context_window"] == 1_000_000
     view = await services.context.compose(
         execution,
         [HumanMessage(content="hello", id="u")],
@@ -189,7 +254,7 @@ async def test_setup_probe_save_revision_credentials_and_default_context(service
         system_prompt="fixture",
     )
     assert view.budget_breakdown["total"] <= view.budget_breakdown["input_budget"]
-    assert run["run_id"] == execution.run_id and len(calls) == 13
+    assert run["run_id"] == execution.run_id and len(calls) == 11
     # The product Worker defaults to live streaming; an unverified JSON-only endpoint must
     # still execute through a safe non-streaming fallback after successful setup.
     from harness.scheduler.worker import Worker
@@ -235,8 +300,8 @@ async def test_setup_concurrent_save_cas_rolls_back_new_key(services, model_serv
     entered, release = asyncio.Event(), asyncio.Event()
     original = setup._probe
 
-    async def paused(*args):
-        result = await original(*args)
+    async def paused(*args, **kwargs):
+        result = await original(*args, **kwargs)
         entered.set()
         await release.wait()
         return result
@@ -245,7 +310,7 @@ async def test_setup_concurrent_save_cas_rolls_back_new_key(services, model_serv
     pending = asyncio.create_task(
         setup.save("local", {**body, "api_key": "new", "profile_id": saved["id"], "expected_revision": 1})
     )
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), timeout=30)
     old = services.store.get("config/models", saved["id"])
     services.store.compare_and_set("config/models", saved["id"], 1, {**old, "revision": 2})
     release.set()

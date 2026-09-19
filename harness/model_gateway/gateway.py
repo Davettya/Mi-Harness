@@ -31,17 +31,32 @@ async def maybe_await(value):
 
 def estimate_tokens(request: dict, profile: ModelProfile | None = None) -> TokenEstimate:
     """Conservative UTF-8 byte estimate, including schemas and protocol wrapping."""
+    import math
+    image_tokens = 0
+    def sanitize(value):
+        nonlocal image_tokens
+        if isinstance(value, list):
+            return [sanitize(v) for v in value]
+        if isinstance(value, dict):
+            if value.get("type") in ("image", "image_url", "input_image"):
+                width, height = value.get("width", 0), value.get("height", 0)
+                if not width and value.get("base64"):
+                    from harness.artifacts.images import validate_image
+                    import base64
+                    dims = validate_image(base64.b64decode(value["base64"], validate=True), value["mime_type"])
+                    width, height = dims["width"], dims["height"]
+                image_tokens += max(4096, math.ceil(width / 28) * math.ceil(height / 28))
+                return {"type": "image", "estimate_source": "app:conservative-28px-patches-v1"}
+            return {k: sanitize(v) for k, v in value.items()}
+        return value
     categories = {}
     for key, value in request.items():
-        raw = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+        raw = json.dumps(sanitize(value), ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
         categories[key] = len(raw.encode("utf-8")) + 8
+    categories["images"] = image_tokens
     margin = profile.token_estimator.safety_margin if profile else 0.2
-    return TokenEstimate(
-        total=sum(categories.values()),
-        categories=categories,
-        algorithm_version="utf8-conservative-v1",
-        error_margin=margin,
-    )
+    return TokenEstimate(total=sum(categories.values()), categories=categories,
+                         algorithm_version="utf8-plus-image-patches-v2", error_margin=margin)
 
 
 class GatewayModelHandle(BaseChatModel):
@@ -53,6 +68,7 @@ class GatewayModelHandle(BaseChatModel):
     schemas: dict[str, dict] = Field(default_factory=dict)
     verification_probe: bool = Field(default=False, exclude=True)
     output_reserve: int | None = Field(default=None, exclude=True)
+    call_binding: dict = Field(default_factory=dict, exclude=True)
 
     @property
     def _llm_type(self):
@@ -284,6 +300,7 @@ class ModelGateway:
                     for block in message.content
                 )
                 and not handle.profile.supports("vision")
+                and not handle.verification_probe
             ):
                 raise GatewayError("vision_unverified", "Vision is not verified for this model profile")
         last_error = None
@@ -384,18 +401,17 @@ class ModelGateway:
                     and not handle.verification_probe
                 ):
                     raise GatewayError("capability_unverified", "Provider returned unverified tool calls")
-                if (
-                    len(turn.message.tool_calls) > 1
-                    and not handle.profile.supports("parallel_tools")
-                    and not handle.verification_probe
-                ):
-                    raise GatewayError(
-                        "parallel_unsupported", "Provider returned unsupported parallel tool calls"
-                    )
+                # Multiple valid tool requests are not permission for concurrent execution.
+                # Compatible providers may return a batch even when parallel_tool_calls=False.
+                # Preserve every call/result pair and let the Host serialize unverified batches.
                 usage = turn.usage
                 provider_id = turn.message.id
                 turn.message.id = message_id
                 turn.message.response_metadata["provider_message_id"] = provider_id
+                turn.message.response_metadata["harness_binding"] = {
+                    **handle.call_binding, "profile_ref": handle.profile.ref, "model_attempt_id": attempt_id,
+                    "tool_execution": "parallel" if handle.profile.supports("parallel_tools") else "serial",
+                }
                 if (
                     usage.source == "provider"
                     and handle.profile.input_price_per_million is not None

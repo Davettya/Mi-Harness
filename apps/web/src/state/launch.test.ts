@@ -12,13 +12,62 @@ it("removes the launch fragment and exchanges only once under concurrent mounts"
     history: { replaceState },
   });
   vi.stubGlobal("document", { cookie: "" });
-  const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+  const fetch = vi
+    .fn()
+    .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ owner_id: "local", csrf_token: "csrf", capabilities: {} }),
+        { status: 200 },
+      ),
+    );
   vi.stubGlobal("fetch", fetch);
   const { connectLaunch } = await import("./launch");
-  await Promise.all([connectLaunch(), connectLaunch()]);
+  const sessions = await Promise.all([connectLaunch(), connectLaunch()]);
   expect(replaceState).toHaveBeenCalledWith(null, "", "/");
-  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(sessions[0].owner_id).toBe("local");
+  expect(fetch).toHaveBeenCalledTimes(2);
   expect(fetch.mock.calls[0][0]).toBe("/api/auth/exchange");
+  expect(fetch.mock.calls[1][0]).toBe("/api/auth/session");
+});
+
+it("silently creates one loopback session when a direct visit has no cookie", async () => {
+  vi.stubGlobal("window", {
+    location: { hash: "", pathname: "/", search: "" },
+    history: { replaceState: vi.fn() },
+  });
+  vi.stubGlobal("document", { cookie: "" });
+  const fetch = vi
+    .fn()
+    .mockResolvedValueOnce(
+      new Response(JSON.stringify({ code: "AUTH_REQUIRED" }), { status: 401 }),
+    )
+    .mockResolvedValueOnce(
+      new Response(null, {
+        status: 204,
+        headers: { "X-CSRF-Token": "automatic-csrf" },
+      }),
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          owner_id: "local",
+          csrf_token: "automatic-csrf",
+          capabilities: {},
+        }),
+        { status: 200 },
+      ),
+    );
+  vi.stubGlobal("fetch", fetch);
+  const { connectLaunch } = await import("./launch");
+  const [first, second] = await Promise.all([connectLaunch(), connectLaunch()]);
+  expect(first.owner_id).toBe("local");
+  expect(second.csrf_token).toBe("automatic-csrf");
+  expect(fetch.mock.calls.map((call) => call[0])).toEqual([
+    "/api/auth/session",
+    "/api/auth/local",
+    "/api/auth/session",
+  ]);
 });
 
 it("collects every project page instead of hiding older projects", async () => {

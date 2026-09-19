@@ -202,12 +202,16 @@ def test_setup_validation_secretstr_and_provider_exceptions_do_not_echo_keys(set
     ):
         value = schema.model_validate(payload)
         assert value.api_key.get_secret_value() == CANARY
+        if schema is not ModelDiscoveryInput:
+            assert value.context_window == 300_000
         assert CANARY not in repr(value) and CANARY not in value.model_dump_json()
     pair(client, auth)
     invalid = client.post("/api/model-setup/test", json={"provider_id": "openai", "api_key": CANARY})
     assert invalid.status_code == 422 and not setup.calls
     invalid_type = client.post("/api/model-setup/test", json=body(api_key=[CANARY]))
     assert invalid_type.status_code == 422 and not setup.calls
+    invalid_context = client.post("/api/model-setup/test", json=body(context_window=500_000))
+    assert invalid_context.status_code == 422 and not setup.calls
     incomplete_edits = []
     for partial in ({"profile_id": "setup-fixture"}, {"expected_revision": 1}):
         response = client.post(
@@ -231,7 +235,14 @@ def test_setup_validation_secretstr_and_provider_exceptions_do_not_echo_keys(set
     assert repeated.json()["code"] == failures[-1].json()["code"]
     assert len([call for call in setup.calls if call[0] == "save"]) == 1
     assert_secret_not_persisted(
-        services, caplog, invalid, invalid_type, *incomplete_edits, *failures, repeated
+        services,
+        caplog,
+        invalid,
+        invalid_type,
+        invalid_context,
+        *incomplete_edits,
+        *failures,
+        repeated,
     )
 
 

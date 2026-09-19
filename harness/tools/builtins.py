@@ -4,16 +4,15 @@ import asyncio
 import fnmatch
 import hashlib
 import os
-import re
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin, urlsplit
 
 import urllib3
 
-from harness.core import HarnessError, OperationKey, utc_now
+from harness.core import HarnessError, OperationKey, content_hash, utc_now
+
 from .contracts import ToolSpec, ToolWait
 from .gateway import after_seconds
 
@@ -26,6 +25,13 @@ TEXT = {"type": "string"}
 PATH = {"type": "string", "minLength": 1}
 INTEGER = {"type": "integer", "minimum": 0}
 
+SEARCH_EXCLUDED_DIRECTORIES = frozenset(
+    {".git", ".idea", ".pytest_cache", ".ruff_cache", ".venv", "__pycache__", "node_modules"}
+)
+SEARCH_FILE_LIMIT = 20000
+SEARCH_FILE_MAX_BYTES = 2 * 1024 * 1024
+SEARCH_LINE_MAX_CHARS = 1000
+
 
 @contextmanager
 def directory_guards(path: Path, root: Path):
@@ -33,8 +39,8 @@ def directory_guards(path: Path, root: Path):
     handles = []
     try:
         if os.name == "nt":
-            import win32file
             import win32con
+            import win32file
 
             directories = list(reversed([p for p in path.parents if p == root or p.is_relative_to(root)]))
             for directory in directories:
@@ -103,19 +109,35 @@ class BuiltinTools:
         )
         add(
             "read_file",
-            "有界读取文件，返回原文产物与版本 hash",
-            {"path": PATH, "offset": INTEGER, "limit": {"type": "integer", "minimum": 1, "maximum": 1048576}},
+            "有界读取文件并返回原文产物与版本 hash；offset/limit 是字节，按行读取用 start_line/line_count，不能混用",
+            {
+                "path": PATH,
+                "offset": {"type": "integer", "minimum": 0, "description": "从 0 开始的字节偏移，不是行号"},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1048576,
+                    "description": "最多读取的字节数",
+                },
+                "start_line": {"type": "integer", "minimum": 1, "description": "从 1 开始的行号"},
+                "line_count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "description": "按行读取时最多返回的完整行数",
+                },
+            },
             ["path"],
             self.read_file,
             ["file_read"],
         )
         add(
             "search_files",
-            "按文件名 glob 和文本搜索工作区",
+            "递归搜索工作区文本；返回匹配项与 complete、stop_reason，完整匹配行无需再次读取核验",
             {
                 "path": PATH,
                 "pattern": TEXT,
-                "glob": TEXT,
+                "glob": {"type": "string", "description": "仅匹配文件名的 glob，默认 *"},
                 "max_results": {"type": "integer", "minimum": 1, "maximum": 500},
             },
             ["pattern"],
@@ -380,12 +402,42 @@ class BuiltinTools:
         path = self.policy.path(ctx, args["path"])
         if not path.is_file():
             raise HarnessError("FILE_NOT_FOUND", "文件不存在", 404)
-        offset, limit = args.get("offset", 0), args.get("limit", 65536)
+        line_mode = "start_line" in args or "line_count" in args
+        if line_mode and ("offset" in args or "limit" in args):
+            raise HarnessError("INVALID_READ_RANGE", "字节范围与行范围不能混用", 422)
+        if "line_count" in args and "start_line" not in args:
+            raise HarnessError("INVALID_READ_RANGE", "按行读取必须提供 start_line", 422)
         with directory_guards(path, self._root(ctx, path)):
             self.policy.path(ctx, args["path"])
-            with path.open("rb") as source:
-                source.seek(offset)
-                chunk = source.read(limit)
+            if line_mode:
+                start_line, line_count = args.get("start_line", 1), args.get("line_count", 200)
+                selected = []
+                has_more = False
+                with path.open("r", encoding="utf-8", errors="replace") as source:
+                    for line_no, line in enumerate(source, 1):
+                        if line_no < start_line:
+                            continue
+                        if len(selected) >= line_count:
+                            has_more = True
+                            break
+                        selected.append(line)
+                text = "".join(selected)
+                if len(text.encode("utf-8")) > 1048576:
+                    raise HarnessError("READ_LIMIT", "所选完整行超过 1 MiB，请缩小 line_count", 422)
+                range_data = dict(
+                    mode="lines",
+                    start_line=start_line,
+                    next_line=start_line + len(selected),
+                )
+                truncated = has_more
+            else:
+                offset, limit = args.get("offset", 0), args.get("limit", 65536)
+                with path.open("rb") as source:
+                    source.seek(offset)
+                    chunk = source.read(limit)
+                text = chunk.decode("utf-8", errors="replace")
+                range_data = dict(mode="bytes", offset=offset, next_offset=offset + len(chunk))
+                truncated = offset + len(chunk) < path.stat().st_size
             digest = self._hash(path)
             refs = []
             if path.stat().st_size <= self.artifacts.max_bytes:
@@ -401,51 +453,81 @@ class BuiltinTools:
                         )
                     ]
                 self.store.reference_artifact(refs[0].artifact_id, "run", ctx.run_id)
-        text = chunk.decode("utf-8", errors="replace")
         return dict(
             summary=text[:16000],
-            structured_data=dict(
-                path=args["path"], content=text, sha256=digest, offset=offset, next_offset=offset + len(chunk)
-            ),
+            structured_data=dict(path=args["path"], content=text, sha256=digest, **range_data),
             artifact_refs=refs,
-            truncated=offset + len(chunk) < path.stat().st_size,
+            truncated=truncated,
         )
 
     async def search(self, ctx, op, args):
         root = self.policy.path(ctx, args.get("path", "."))
         max_results = args.get("max_results", 100)
-        results, examined = [], 0
-        candidates = [root] if root.is_file() else root.rglob("*")
-        for path in candidates:
-            examined += 1
-            if examined > 20000 or len(results) >= max_results:
-                break
-            if any(x in {".git", "node_modules", ".venv", "__pycache__"} for x in path.parts):
-                continue
-            if not path.is_file() or not fnmatch.fnmatch(path.name, args.get("glob", "*")):
+        results, files_examined = [], 0
+        stop_reason = None
+
+        def candidates():
+            if root.is_file():
+                yield root
+                return
+            for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+                current_path = Path(current)
+                kept = []
+                for name in sorted(directories):
+                    child = current_path / name
+                    if name in SEARCH_EXCLUDED_DIRECTORIES:
+                        continue
+                    try:
+                        self.policy.path(ctx, str(child))
+                    except (HarnessError, OSError):
+                        continue
+                    kept.append(name)
+                directories[:] = kept
+                for name in sorted(files):
+                    yield current_path / name
+
+        for path in candidates():
+            if not fnmatch.fnmatch(path.name, args.get("glob", "*")):
                 continue
             try:
-                self.policy.path(ctx, str(path))
-                if path.stat().st_size > 2 * 1024 * 1024:
+                safe = self.policy.path(ctx, str(path))
+                if not safe.is_file():
                     continue
-                with path.open("r", encoding="utf-8", errors="replace") as source:
+                if safe.stat().st_size > SEARCH_FILE_MAX_BYTES:
+                    continue
+                if files_examined >= SEARCH_FILE_LIMIT:
+                    stop_reason = "file_limit"
+                    break
+                files_examined += 1
+                with safe.open("r", encoding="utf-8", errors="replace") as source:
                     for line_no, line in enumerate(source, 1):
-                        if args["pattern"].casefold() in line.casefold():
-                            results.append(
-                                dict(
-                                    path=self._display_path(ctx, path),
-                                    line=line_no,
-                                    text=line[:1000],
-                                )
+                        if args["pattern"].casefold() not in line.casefold():
+                            continue
+                        if len(results) >= max_results:
+                            stop_reason = "result_limit"
+                            break
+                        text = line.rstrip("\r\n")
+                        results.append(
+                            dict(
+                                path=self._display_path(ctx, safe),
+                                line=line_no,
+                                text=text[:SEARCH_LINE_MAX_CHARS],
+                                text_truncated=len(text) > SEARCH_LINE_MAX_CHARS,
                             )
-                            if len(results) >= max_results:
-                                break
+                        )
+                if stop_reason:
+                    break
             except (OSError, HarnessError):
                 continue
+        complete = stop_reason is None
         return dict(
-            summary=f"找到 {len(results)} 条匹配",
-            structured_data=dict(matches=results),
-            truncated=len(results) >= max_results or examined > 20000,
+            summary=f"找到 {len(results)} 条匹配；" + ("扫描完成" if complete else f"提前停止: {stop_reason}"),
+            structured_data=dict(
+                matches=results,
+                complete=complete,
+                stop_reason=stop_reason,
+            ),
+            truncated=not complete,
         )
 
     async def write(self, ctx, op, args):
@@ -645,7 +727,9 @@ class BuiltinTools:
 
     async def plan_update(self, ctx, op, args):
         self.store.assert_fence(ctx)
-        plan = dict(run_id=ctx.run_id, steps=args["steps"], updated_at=utc_now())
+        old = self.store.get("plans", ctx.run_id) or {"revision": 0}
+        plan = dict(plan_id=ctx.run_id, run_id=ctx.run_id, steps=args["steps"], updated_at=utc_now(),
+                    revision=old["revision"] + 1, content_hash=content_hash(args["steps"]))
         self.store.put("plans", ctx.run_id, plan)
         return dict(summary="计划已更新", structured_data=plan)
 
