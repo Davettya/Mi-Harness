@@ -18,7 +18,8 @@ def test_named_policy_and_default_context_are_resolved_and_unknown_refs_rejected
     snapshot = services.store.get("snapshots",services.store.run(run_id)["snapshot_id"])
     assert snapshot["policy"]["capabilities"]==["file_read"]
     assert snapshot["policy"]["egress"]=="local_only"
-    assert snapshot["context_policy"]["output_reserve"]==1024
+    assert snapshot["context_policy"]["revision"]==3
+    assert snapshot["context_policy"]["output_reserve"]==8192
     assert services.policy.effective(ctx)["capabilities"]==["file_read"]
     revision = services.policy.effective(ctx)["revision"]
     services.save_config("policies","reader",{**DEFAULT_POLICY,"expected_revision":1,"capabilities":[]})

@@ -9,13 +9,16 @@ from harness.server.composition import DEFAULT_SYSTEM_PROMPT, Services
 
 def test_default_and_explicit_extended_context_budgets():
     default = demo_profile()
+    policy = ContextPolicy()
+    assert policy.revision == 3
+    assert policy.output_reserve == 8_192
     assert default.limits.context_window == 300_000
     assert default.limits.input_limit is None
-    assert input_budget(default, ContextPolicy())["input_budget"] == 298_720
+    assert input_budget(default, policy)["input_budget"] == 291_552
 
     extended = default.model_copy(update={"limits": configured_model_limits(1_000_000)})
-    assert extended.limits.source_ref == "user-configured:model-context-window-1m-v1"
-    assert input_budget(extended, ContextPolicy())["input_budget"] == 998_720
+    assert extended.limits.source_ref == "user-configured:model-context-window-1m-v2"
+    assert input_budget(extended, policy)["input_budget"] == 991_552
 
 
 def test_startup_migrates_current_profile_and_preserves_historical_revision(tmp_path):
@@ -104,6 +107,46 @@ def test_startup_migrates_current_profile_and_preserves_historical_revision(tmp_
 
     Services(Settings(data_dir=data_dir))
     assert migrated_services.store.get("config/models", "legacy")["revision"] == 2
+
+
+def test_startup_upgrades_only_legacy_application_output_default(tmp_path):
+    data_dir = tmp_path / "data"
+    initial = Services(Settings(data_dir=data_dir))
+    current = demo_profile().model_copy(
+        update={
+            "profile_id": "app-default",
+            "limits": ModelLimits(
+                context_window=300_000,
+                input_limit=None,
+                output_limit=2_048,
+                source_ref="app:default-model-context-window-300k-v1",
+            ),
+        }
+    )
+    explicit = current.model_copy(
+        update={
+            "profile_id": "explicit",
+            "limits": current.limits.model_copy(update={"source_ref": "provider:explicit"}),
+        }
+    )
+    for profile in (current, explicit):
+        initial.store.put(
+            "config/models",
+            profile.profile_id,
+            {"id": profile.profile_id, **profile.model_dump(mode="json")},
+        )
+        initial.store.put("model_profiles", profile.ref, profile.model_dump(mode="json"))
+
+    migrated = Services(Settings(data_dir=data_dir))
+    upgraded = migrated.store.get("config/models", "app-default")
+    assert upgraded["revision"] == 2
+    assert upgraded["limits"]["output_limit"] == 8_192
+    assert upgraded["limits"]["source_ref"] == "app:default-model-context-window-300k-v2"
+    assert migrated.store.get("model_profiles", current.ref)["limits"]["output_limit"] == 2_048
+    assert migrated.store.get("config/models", "explicit")["revision"] == 1
+
+    Services(Settings(data_dir=data_dir))
+    assert migrated.store.get("config/models", "app-default")["revision"] == 2
 
 
 def test_startup_migrates_default_prompt_to_proportional_evidence_contract(tmp_path):

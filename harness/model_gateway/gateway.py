@@ -20,7 +20,14 @@ from pydantic import ConfigDict, Field
 
 from harness.core import DiagnosticContext
 
-from .profiles import GatewayError, ModelProfile, TokenEstimate, Usage, demo_profile
+from .profiles import (
+    DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
+    GatewayError,
+    ModelProfile,
+    TokenEstimate,
+    Usage,
+    demo_profile,
+)
 from .protocol import StreamAssembler, validate_history, validate_response
 from .providers import build_provider_model
 
@@ -312,7 +319,7 @@ class ModelGateway:
             if self.policy_check:
                 await maybe_await(self.policy_check(ctx, handle.profile))
             deadline = getattr(ctx, "deadline_at", None)
-            timeout = 60.0
+            timeout = DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS
             if deadline:
                 limit = datetime.fromisoformat(deadline) if isinstance(deadline, str) else deadline
                 if datetime.now(UTC) >= limit:

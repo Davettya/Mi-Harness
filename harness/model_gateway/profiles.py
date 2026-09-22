@@ -9,6 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 DEFAULT_MODEL_CONTEXT_WINDOW = 300_000
 EXTENDED_MODEL_CONTEXT_WINDOW = 1_000_000
+DEFAULT_MODEL_OUTPUT_LIMIT = 8_192
+DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS = 180.0
 CONFIGURABLE_MODEL_CONTEXT_WINDOWS = {
     DEFAULT_MODEL_CONTEXT_WINDOW,
     EXTENDED_MODEL_CONTEXT_WINDOW,
@@ -46,7 +48,7 @@ def configured_model_limits(
     context_window: int = DEFAULT_MODEL_CONTEXT_WINDOW,
     *,
     previous: ModelLimits | None = None,
-    output_limit: int | None = 2048,
+    output_limit: int | None = DEFAULT_MODEL_OUTPUT_LIMIT,
 ) -> ModelLimits:
     """Build the application-owned context tier without inventing provider evidence."""
     if context_window not in CONFIGURABLE_MODEL_CONTEXT_WINDOWS:
@@ -57,9 +59,9 @@ def configured_model_limits(
         output_limit=previous.output_limit if previous and previous.output_limit else output_limit,
         reasoning_tokens=previous.reasoning_tokens if previous else "unknown",
         source_ref=(
-            "user-configured:model-context-window-1m-v1"
+            "user-configured:model-context-window-1m-v2"
             if context_window == EXTENDED_MODEL_CONTEXT_WINDOW
-            else "app:default-model-context-window-300k-v1"
+            else "app:default-model-context-window-300k-v2"
         ),
     )
 

@@ -1,5 +1,11 @@
 # Web 与 API 验收记录
 
+最新增量（2026-09-19）：对话中的工具消息改为无头像、默认折叠的原生 `details/summary`，点击标题或使用键盘可展开；用户与 Mi 消息保持原样。组件回归纳入 Web 全量 42 项测试，生产构建、后端 194 通过/1 跳过、sdist/wheel 和隔离安装全部通过；当前 8767 服务已读取本次新静态资源。证据见 [工具消息展示验收](../../docs/verification/tool-message-presentation.md)。
+
+最新命名增量（2026-09-19）：标题、侧栏、mi 标记、助手署名与头像统一为 **Mi Harness** / Mi，桌面及 390px 实测无溢出。公开助手 API 与 OpenAPI 标题同步；结果和截图见 [产品命名验收](../../docs/verification/product-name.md)。
+
+最新增量（2026-09-19）：星见雅原服装配色主题，40 项前端回归、12 项相关后端回归通过；Edge 实际样式的 968 处文字对比检查通过，最低 5.038:1；8 组控件/焦点配色最低 3.074:1。桌面、390px 窄屏及状态截图、构建与边界见 [主题验收](../../docs/verification/miyabi-color-theme.md)。后文为历史结果。
+
 日期：2026-09-17；平台：Windows；浏览器：Codex In-app Browser。测试连接真实 FastAPI、SQLite、Scheduler Worker 与 LangGraph runtime，使用标注的确定性 `demo` 模型，无真实供应商调用。所有写入位于专用临时数据目录 `%TEMP%/harness-web-smoke-20260917` 和其 `workspace/` 下。
 
 ## 初始自动化与构建（模型设置修订前）
@@ -73,3 +79,23 @@
 ## 模型设置修订：实际服务重启后复验
 
 北京时间 21:52 完成原用户数据目录的协调备份与重启，入口 `http://127.0.0.1:8767/`。Codex In-app Browser 的原配对正常读取新页面与 8 类提供方目录；腾讯云 Token Plan 仅显示提供方、API Key、模型名称；切换自定义服务出现地址，切换 Ollama 后地址和密钥输入消失。恢复腾讯云表单并目视检查布局，保留页面供用户配置。此旅程未输入凭据、未保存虚构模型，默认仍为原 Demo；此前 Edge fixture 的 Cookie 不参与此次 IAB 验收。当前 API/Worker/supervisor 就绪且数据库完整性正常。
+## 2026-09-18 改进交互验收
+
+使用独立临时数据目录和 Codex In-app Browser，未覆盖原用户实例。实测固定助手/独立 Plan 模式、禁止写文件、plan_update 保存和确认新 ReAct 任务、刷新偏好；MCP 重复 JSON key 错误和原文保存版本回显。真实光标键在文字中间插入测试 PNG，原位回填、撤销、刷新后有序草稿恢复；未验证视觉的 Demo 返回 VISION_UNVERIFIED 并保留草稿。块手柄拖拽将图片移到文字前，撤销恢复原顺序。最终构建 300 modules，Vitest 7 files / 30 tests 通过。完整阶段记录和限制见 [改进验收报告](../../docs/verification/improvement-report.md)；下列旧日期结果为历史证据。
+
+## 2026-09-18：草图输入框重设计
+
+连续输入框与行内附件卡片已替换分块编辑视图，模式/模型改为向上弹层、底栏为加号与圆形发送键。本次 34 项前端回归、16 项相关后端回归、13 项独立真实服务浏览器交互通过，TypeScript/Vite 与 sdist/wheel 构建成功；用户 8767 服务已备份重启，实际资源 hash 与本次构建一致。详细证据、截图、测试方法与限制见 [输入框验收](../../docs/verification/composer-redesign.md)。前文的块拖拽 UI 记录属于历史版本。
+
+## 2026-09-18：原用户数据目录图片上传修复
+
+短目录浏览器测试未覆盖 Microsoft Store Python 的 LocalCache 长路径。用户原图在原服务上触发 277 字符对象路径的 WinError 3；已修复内部存储及备份恢复长路径命名。原页面点击重试后上传成功、发送键恢复，图片字节保持一致。原因、回归前后证据与边界见 [上传修复记录](../../docs/verification/upload-long-path-fix.md)。
+
+
+## 2026-09-18 新增模型校验闭环
+
+完整校验由服务端维护；页面逐项展示检查结果、请求次数、耗时与错误原因。直接保存先检测，部分失败不保存且不自动勾选受限能力；快速连接结果不能用作激活证据，保存会补做完整验证。重试强制新探测，配置编辑清除旧证据及勾选。37 项 Web 测试与构建通过，详见 [验收记录](../../docs/verification/model-validation-mechanism.md)。
+
+## 2026-09-18 本机无感配对
+
+直接打开 8767 时，前端先恢复 Cookie；401 后只调用一次同源 loopback 自动会话接口，再读取已认证会话，不展示配对表单。旧 launch fragment 继续兼容。后端回归覆盖匿名业务 API 仍返回 401、允许的 loopback/Origin 签发 HttpOnly/SameSite Cookie、跨站与非回环拒绝、CSRF 后续写入；前端覆盖 StrictMode 并发只执行一条自动连接链。完整构建和现场服务结果见 [无感配对验收](../../docs/verification/seamless-local-pairing.md)。

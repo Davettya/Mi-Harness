@@ -11,7 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
-from .profiles import GatewayError, ModelProfile
+from .profiles import DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS, GatewayError, ModelProfile
 from .transports import bounded_transport
 
 
@@ -141,23 +141,39 @@ def build_provider_model(
             if profile.provider_id != "custom":
                 raise GatewayError("missing_credential", "OpenAI profile has no configured credential")
             credential = "not-required"
-        return ChatOpenAI(
+        provider_options = {}
+        if (
+            profile.provider_id == "qwen"
+            and profile.api_mode == "chat_completions"
+            and profile.model_id.lower().startswith("qwen3.8-")
+        ):
+            provider_options["extra_body"] = {"enable_thinking": False}
+        model_type = ChatOpenAI
+        if profile.provider_id == "deepseek" and profile.api_mode == "chat_completions":
+            from .deepseek import DeepSeekChatModel
+
+            model_type = DeepSeekChatModel
+        return model_type(
             model=profile.model_id,
             base_url=endpoint,
             api_key=credential,
             max_retries=0,
-            timeout=60,
+            timeout=DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
             max_tokens=profile.limits.output_limit,
             use_responses_api=profile.api_mode == "responses",
             http_client=httpx.Client(
-                trust_env=False, follow_redirects=False, timeout=60, transport=bounded_transport(httpx)
+                trust_env=False,
+                follow_redirects=False,
+                timeout=DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
+                transport=bounded_transport(httpx),
             ),
             http_async_client=httpx.AsyncClient(
                 trust_env=False,
                 follow_redirects=False,
-                timeout=60,
+                timeout=DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
                 transport=bounded_transport(httpx, asynchronous=True),
             ),
+            **provider_options,
         )
     if profile.adapter_id == "anthropic":
         from langchain_anthropic import ChatAnthropic
@@ -172,7 +188,7 @@ def build_provider_model(
             base_url=endpoint,
             api_key=credential,
             max_retries=0,
-            timeout=60,
+            timeout=DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
             max_tokens=profile.limits.output_limit or 1024,
         )
         # These are cached properties in locked langchain-anthropic 1.7.2. Seed them
@@ -184,7 +200,7 @@ def build_provider_model(
             http_client=anthropic_httpx.Client(
                 trust_env=False,
                 follow_redirects=False,
-                timeout=60,
+                timeout=DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
                 transport=bounded_transport(anthropic_httpx),
             ),
         )
@@ -195,7 +211,7 @@ def build_provider_model(
             http_client=anthropic_httpx.AsyncClient(
                 trust_env=False,
                 follow_redirects=False,
-                timeout=60,
+                timeout=DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
                 transport=bounded_transport(anthropic_httpx, asynchronous=True),
             ),
         )
@@ -206,7 +222,11 @@ def build_provider_model(
         model=profile.model_id,
         base_url=endpoint,
         num_predict=profile.limits.output_limit,
-        client_kwargs={"trust_env": False, "follow_redirects": False, "timeout": 60},
+        client_kwargs={
+            "trust_env": False,
+            "follow_redirects": False,
+            "timeout": DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS,
+        },
         sync_client_kwargs={"transport": bounded_transport(httpx)},
         async_client_kwargs={"transport": bounded_transport(httpx, asynchronous=True)},
     )

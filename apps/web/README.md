@@ -1,6 +1,8 @@
-# Harness Web 工作台
+# Mi Harness Web 工作台
 
 React + TypeScript 工作台，依据 [11-web](../../docs/implementation/11-web.md) 和 [10-api-events](../../docs/implementation/10-api-events.md) 实现。浏览器只呈现服务端事实；任务、授权、操作账本和配置版本由后端持有。
+
+当前采用星见雅原服装启发的墨黑、冷白与灰青主题。色值集中在 `src/style.css` 的语义变量，侧栏局部覆盖成对的前景/背景；新增组件应复用语义色，不使用低透明度淡化文字。设计与对比度标准见 [主题规范](../../docs/implementation/19-miyabi-color-theme.md)，桌面、窄屏与实际色彩检查见 [主题验收](../../docs/verification/miyabi-color-theme.md)。
 
 ## 构建与开发
 
@@ -19,7 +21,7 @@ npm test
 npm run build
 ```
 
-生产 API 自动提供 `dist/`，wheel 构建将其放入 `harness/resources/web`。`harness serve --open` 自动打开工作台，前端消费 URL fragment 中的短期一次性启动凭证并立即清除，换取登录 Cookie。普通使用无需手填口令；`harness pair` 保留为备用入口。本地开发可运行 `npm run dev`，在 loopback 5173 提供页面并代理到 8767，开发入口可用备用配对。
+生产 API 自动提供 `dist/`，wheel 构建将其放入 `harness/resources/web`。`mi-harness serve --open` 自动打开工作台，前端消费 URL fragment 中的短期一次性启动凭证并立即清除，换取登录 Cookie。普通使用无需手填口令；`mi-harness pair` 保留为备用入口。本地开发可运行 `npm run dev`，在 loopback 5173 提供页面并代理到 8767，开发入口可用备用配对。
 
 当前界面采用项目分组侧栏：所有项目同时显示，每个项目支持多个源文件夹，组内列出独立会话。新建会话即时持久化，项目设置支持原生目录选择及手填路径。细节见 [项目实现说明](../../docs/implementation/16-projects-and-local-launch.md)。
 
@@ -29,6 +31,7 @@ npm run build
 - SSE 按耐久 seq 去重和检测缺口；临时文本独立缓存，重连不补发旧临时片段，完整消息替换临时内容。连接断开不会取消任务。
 - 草稿与待重试命令仅保留在当前页面内存。配置、交互、核对、steering 与上下文固定内容使用相应 revision，不根据点击结果推断成功。
 - 模型回复（含流式输出和历史消息）使用 `react-markdown` + `remark-gfm` 渲染，支持标题、强调、列表、引用、表格、任务清单、删除线及代码块。用户输入、工具输出和原始产物文本继续按纯文本显示。
+- 对话中的工具消息不显示头像，并以原生 `details/summary` 默认折叠；点击标题或使用键盘可展开原有安全文本、完整结构化结果与附件入口。展开状态只属于当前页面视图，不写回任务状态。
 - Markdown 不解析原始 HTML；链接仅允许绝对 HTTP(S) 地址，新标签页使用 `noopener noreferrer`；图片语法显示为链接，避免自动请求不可信远程图片。未闭合的流式代码围栏可直接显示，完整消息到达后使用同一组件。
 - HTML/SVG 产物使用无权限 iframe 与 restrictive CSP；PDF 与超限文件提供下载。页面不执行产物脚本。
 - 模型和 MCP 配置只保存凭据引用。演示模型明确标注为确定性本地演示；其验收不能代替真实供应商兼容性验证。

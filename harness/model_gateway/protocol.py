@@ -43,9 +43,16 @@ class ValidatedAssistantTurn:
     provider_metadata: dict[str, Any]
 
 
+def _raise_if_truncated(metadata: dict[str, Any]) -> None:
+    finish = metadata.get("finish_reason") or metadata.get("stop_reason")
+    if finish in {"length", "max_tokens", "content_filter"}:
+        raise GatewayError("truncated_response", "Model response did not complete normally")
+
+
 def validate_response(message: AIMessage, schemas: dict[str, dict] | None = None) -> ValidatedAssistantTurn:
     if not isinstance(message, AIMessage) or isinstance(message, AIMessageChunk):
         raise GatewayError("invalid_response", "A complete assistant message is required")
+    _raise_if_truncated(message.response_metadata)
     if message.invalid_tool_calls:
         raise GatewayError("invalid_tool_arguments", "Provider returned malformed tool arguments")
     seen: set[str] = set()
@@ -64,9 +71,6 @@ def validate_response(message: AIMessage, schemas: dict[str, dict] | None = None
                 raise GatewayError(
                     "invalid_tool_arguments", "Tool arguments violate the bound schema"
                 ) from exc
-    finish = message.response_metadata.get("finish_reason") or message.response_metadata.get("stop_reason")
-    if finish in {"length", "max_tokens", "content_filter"}:
-        raise GatewayError("truncated_response", "Model response did not complete normally")
     if not message.id:
         message = message.model_copy(update={"id": str(uuid4())})
     metadata = message.usage_metadata
@@ -98,6 +102,7 @@ class StreamAssembler:
         self.finished = True
         if not completed or self.chunk is None:
             raise GatewayError("incomplete_stream", "Stream ended before complete response")
+        _raise_if_truncated(self.chunk.response_metadata)
         # LangChain's partial JSON parser intentionally repairs truncated strings for UI use.
         # Execution requires strict JSON parsing of the original accumulated argument bytes.
         for call in self.chunk.tool_call_chunks:

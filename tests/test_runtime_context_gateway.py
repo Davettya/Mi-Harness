@@ -254,6 +254,29 @@ def test_stream_assembler_never_accepts_partial_or_invalid_calls():
     assert turn.usage.source == "unknown" and turn.usage.cost is None
 
 
+@pytest.mark.parametrize("finish_reason", ["length", "max_tokens", "content_filter"])
+def test_stream_truncation_is_reported_before_partial_json(finish_reason):
+    stream = StreamAssembler("truncated")
+    stream.push(
+        "truncated",
+        AIMessageChunk(
+            content="",
+            response_metadata={"finish_reason": finish_reason},
+            tool_call_chunks=[
+                {
+                    "name": "write_file",
+                    "args": '{"path":"scene.svg","content":"<svg',
+                    "id": "call",
+                    "index": 0,
+                }
+            ],
+        ),
+    )
+    with pytest.raises(GatewayError) as error:
+        stream.finish(completed=True)
+    assert error.value.code == "truncated_response"
+
+
 def test_history_and_budget_contracts():
     call = AIMessage(content="", tool_calls=[{"name": "echo", "args": {}, "id": "call"}])
     with pytest.raises(GatewayError):
@@ -267,6 +290,24 @@ def test_history_and_budget_contracts():
     assert (
         input_budget(profile, ContextPolicy(output_reserve=1000, safety_tokens=100))["input_budget"] == 8900
     )
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "max_tokens", "content_filter"])
+def test_truncated_provider_responses_never_become_executable_turns(finish_reason):
+    from harness.model_gateway import validate_response
+
+    message = AIMessage(
+        content="partial",
+        response_metadata={"finish_reason": finish_reason},
+        tool_calls=[{"name": "echo", "args": {"text": "partial"}, "id": "call"}],
+    )
+    with pytest.raises(GatewayError) as error:
+        validate_response(
+            message,
+            {"echo": {"type": "object", "properties": {"text": {"type": "string"}}}},
+        )
+    assert error.value.code == "truncated_response"
+    assert error.value.retryable is False
 
 
 @pytest.mark.asyncio

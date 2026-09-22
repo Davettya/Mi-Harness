@@ -29,6 +29,7 @@ from harness.mcp.continuation import McpContinuationService
 from harness.model_gateway import (
     CONFIGURABLE_MODEL_CONTEXT_WINDOWS,
     DEFAULT_MODEL_CONTEXT_WINDOW,
+    DEFAULT_MODEL_OUTPUT_LIMIT,
     EXTENDED_MODEL_CONTEXT_WINDOW,
     ModelGateway,
     ModelProfile,
@@ -229,20 +230,34 @@ class Services:
                 {k: v for k, v in config.items() if k not in {"id", "active"}}
             )
             limits = profile.limits
-            if (
+            context_limits_are_current = (
                 limits.context_window in CONFIGURABLE_MODEL_CONTEXT_WINDOWS
                 and limits.input_limit is None
-            ):
+            )
+            uses_legacy_app_output_default = (
+                limits.output_limit == 2_048
+                and limits.source_ref
+                in {
+                    "app:default-model-context-window-300k-v1",
+                    "user-configured:model-context-window-1m-v1",
+                }
+            )
+            if context_limits_are_current and not uses_legacy_app_output_default:
                 continue
+            migrated_limits = configured_model_limits(
+                limits.context_window
+                if limits.context_window == EXTENDED_MODEL_CONTEXT_WINDOW
+                else DEFAULT_MODEL_CONTEXT_WINDOW,
+                previous=limits,
+            )
+            if uses_legacy_app_output_default:
+                migrated_limits = migrated_limits.model_copy(
+                    update={"output_limit": DEFAULT_MODEL_OUTPUT_LIMIT}
+                )
             migrated = profile.model_copy(
                 update={
                     "revision": profile.revision + 1,
-                    "limits": configured_model_limits(
-                        limits.context_window
-                        if limits.context_window == EXTENDED_MODEL_CONTEXT_WINDOW
-                        else DEFAULT_MODEL_CONTEXT_WINDOW,
-                        previous=limits,
-                    ),
+                    "limits": migrated_limits,
                 }
             )
             old_ref = profile.ref

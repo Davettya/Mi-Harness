@@ -150,20 +150,30 @@ def provider_server():
 
 
 @pytest.mark.parametrize(
-    "adapter,mode,suffix",
-    [("openai", "chat_completions", "/v1"), ("anthropic", "messages", ""), ("ollama", "chat", "")],
+    "provider_id,adapter,mode,suffix",
+    [
+        ("openai", "openai", "chat_completions", "/v1"),
+        ("qwen", "openai", "chat_completions", "/v1"),
+        ("anthropic", "anthropic", "messages", ""),
+        ("ollama", "ollama", "chat", ""),
+    ],
 )
 @pytest.mark.asyncio
-async def test_real_adapter_protocol_fixture_multi_round(provider_server, adapter, mode, suffix):
+async def test_real_adapter_protocol_fixture_multi_round(
+    provider_server, provider_id, adapter, mode, suffix
+):
+    from harness.model_gateway import DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS
+
+    assert DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS == 180.0
     endpoint, calls = provider_server
     policy_checks, reservations, settlements = [], [], []
     profile = ModelProfile(
-        profile_id=adapter,
-        provider_id=adapter,
+        profile_id=provider_id,
+        provider_id=provider_id,
         adapter_id=adapter,
         endpoint_ref="fixture-endpoint",
         credential_ref="fixture-key" if adapter != "ollama" else None,
-        model_id="fixture-model",
+        model_id="qwen3.8-flash" if provider_id == "qwen" else "fixture-model",
         api_mode=mode,
         capabilities={
             name: Capability(status="verified", evidence_ref="local-protocol-fixture-only")
@@ -224,6 +234,7 @@ async def test_real_adapter_protocol_fixture_multi_round(provider_server, adapte
         assert calls[0][1]["messages"][0]["images"] == [image_data]
     elif adapter == "openai":
         assert calls[0][1].get("max_completion_tokens", calls[0][1].get("max_tokens")) == 123
+        assert calls[0][1].get("enable_thinking") is (False if provider_id == "qwen" else None)
         image_block = calls[0][1]["messages"][0]["content"][1]
         assert image_block["image_url"]["url"] == "data:image/png;base64," + image_data
     else:

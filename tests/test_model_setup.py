@@ -188,7 +188,8 @@ async def test_setup_probe_save_revision_credentials_and_default_context(service
     assert profile.supports("text") and profile.supports("tool_calling") and profile.supports("vision")
     assert profile.limits.context_window == 300_000
     assert profile.limits.input_limit is None
-    assert profile.limits.source_ref == "app:default-model-context-window-300k-v1"
+    assert profile.limits.output_limit == 8_192
+    assert profile.limits.source_ref == "app:default-model-context-window-300k-v2"
     assert services.store.get("config/agents", "default")["model_policy"]["profile_ref"] == profile.ref
     assert services.vault.get(profile.credential_ref, "model-" + profile.profile_id) == body["api_key"]
     ctx = services.diagnostic("local", profile.ref)
@@ -215,7 +216,7 @@ async def test_setup_probe_save_revision_credentials_and_default_context(service
     updated_profile = ModelProfile.model_validate(updated["profile"])
     assert updated_profile.limits.context_window == 1_000_000
     assert updated_profile.limits.input_limit is None
-    assert updated_profile.limits.source_ref == "user-configured:model-context-window-1m-v1"
+    assert updated_profile.limits.source_ref == "user-configured:model-context-window-1m-v2"
     assert services.models.get_profile(profile.ref).credential_ref == profile.credential_ref
     assert len(services.vault.values) == 2
     assert "canary-secret" not in json.dumps(

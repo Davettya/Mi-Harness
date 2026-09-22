@@ -1,20 +1,57 @@
 {
-  "started_at": "2026-09-17T13:38:35.746822+00:00",
+  "started_at": "2026-09-20T04:16:00.271196+00:00",
   "steps": {
+    "openapi": {
+      "exit_code": 0,
+      "seconds": 1.219,
+      "command": [
+        "apps/web/scripts/export_openapi.py"
+      ]
+    },
+    "api_types": {
+      "exit_code": 0,
+      "seconds": 9.391,
+      "command": [
+        "--prefix",
+        "apps/web",
+        "run",
+        "generate:api"
+      ]
+    },
+    "web_tests": {
+      "exit_code": 0,
+      "seconds": 6.407,
+      "command": [
+        "--prefix",
+        "apps/web",
+        "test"
+      ]
+    },
+    "web_build": {
+      "exit_code": 0,
+      "seconds": 8.609,
+      "command": [
+        "--prefix",
+        "apps/web",
+        "run",
+        "build"
+      ]
+    },
     "pytest": {
-      "exit_code": 1,
-      "seconds": 597.547,
+      "exit_code": 0,
+      "seconds": 353.86,
       "command": [
         "-m",
         "pytest",
         "-q",
         "--disable-warnings",
+        "--durations=10",
         "--junitxml=docs/verification/latest-pytest.xml"
       ]
     },
     "compile": {
       "exit_code": 0,
-      "seconds": 0.531,
+      "seconds": 0.141,
       "command": [
         "-m",
         "compileall",
@@ -24,7 +61,7 @@
     },
     "lint": {
       "exit_code": 0,
-      "seconds": 0.812,
+      "seconds": 0.312,
       "command": [
         "-m",
         "ruff",
@@ -36,12 +73,33 @@
     },
     "build": {
       "exit_code": 0,
-      "seconds": 41.266,
+      "seconds": 13.282,
       "command": [
         "-m",
         "build"
       ]
+    },
+    "locked_runtime": {
+      "exit_code": 0,
+      "seconds": 0.328,
+      "command": [
+        "export",
+        "--locked",
+        "--no-dev",
+        "--no-emit-project",
+        "--format",
+        "requirements-txt",
+        "--output-file",
+        "docs/verification/runtime-requirements.txt"
+      ]
+    },
+    "wheel_install": {
+      "exit_code": 0,
+      "seconds": 22.75,
+      "command": [
+        "scripts/verify_wheel.py"
+      ]
     }
   },
-  "completed_at": "2026-09-17T13:49:15.923746+00:00"
+  "completed_at": "2026-09-20T04:22:56.687953+00:00"
 }

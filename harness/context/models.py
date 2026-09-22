@@ -10,8 +10,8 @@ from harness.core import ArtifactRef, new_id, utc_now
 
 class ContextPolicy(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
-    revision: int = 1
-    output_reserve: int = Field(default=1024, gt=0)
+    revision: int = 3
+    output_reserve: int = Field(default=8192, gt=0)
     safety_tokens: int = Field(default=256, ge=0)
     soft_threshold: float = Field(default=0.75, gt=0, lt=1)
     compaction_target: float = Field(default=0.55, gt=0, lt=1)

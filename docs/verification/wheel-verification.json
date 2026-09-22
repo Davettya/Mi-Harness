@@ -1,7 +1,7 @@
 {
-  "started_at": "2026-09-17T16:19:19.591336+00:00",
-  "wheel": "local_agent_harness-0.1.0-py3-none-any.whl",
-  "wheel_sha256": "dd9bdd2d0aad757d8080d922c49b09081f40b82115c03fff58506dbccf50eb2e",
+  "started_at": "2026-09-20T04:22:34.183903+00:00",
+  "wheel": "mi_harness-0.1.0-py3-none-any.whl",
+  "wheel_sha256": "7c75df07abb0b01036fddb816ddf690eefd00908d55ec582ce80c78db25ead92",
   "checks": {
     "bundled_web_and_skill": true,
     "isolated_install": true,
@@ -10,5 +10,5 @@
     "installed_stop": true
   },
   "passed": true,
-  "completed_at": "2026-09-17T16:19:53.291428+00:00"
+  "completed_at": "2026-09-20T04:22:56.644559+00:00"
 }
